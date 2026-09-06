@@ -38,4 +38,12 @@ Use your real name exactly as it appears in `MASTER_README.md` Section 10:
 
 ```
 [2026-09-09 10:00] [All] [Day 0] DONE — CONTRACTS.md drafted and agreed by all 4 in sync call
+
+[2026-09-06 17:56] [vedantk] [Step 1 — Deepgram STT] DONE — lk agent console backend\voice_io\agent.py; real microphone speech produced TRANSCRIPT lines
+[2026-09-06 18:03] [vedantk] [Step 2 — Stub Task Manager] DONE — lk agent console backend\voice_io\agent.py; each transcript produced a unique task_id with status=ACTIVE
+[2026-09-06 18:23] [vedantk] [Step 3 — Rime TTS integration] DONE — py backend\rime\tts_rime.py; RIME VERIFIED: coda/lyra, PCM 16000 Hz, 23 frames, 48800 bytes
+[2026-09-06 18:36] [vedantk] [Step 4 — Rime LiveKit playback] DONE — lk agent console backend\voice_io\agent.py; RIME PLAYBACK FINISHED observed and Rime acknowledgement heard
+[2026-09-06 18:46] [vedantk] [Step 5 — Interrupt playback] DONE — lk agent console backend\voice_io\agent.py; interrupt event emitted and RIME PLAYBACK STOPPED with reason=interrupted
+[2026-09-06 19:02] [vedantk] [Step 6 — Speech lifecycle events] DONE — lk agent console backend\voice_io\agent.py; speech.started/speech.stopped emitted with task_id, speech_id, stopped_reason, and ms_spoken
+[2026-09-06 18:57] [vedantk] [Endpointing tuning] DONE — lk agent console backend\voice_io\agent.py; flowing request committed as one task with no late-transcript warning
 ```
