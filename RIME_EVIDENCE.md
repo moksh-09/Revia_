@@ -31,7 +31,7 @@ AUDIO_FORMAT: pcm, sample_rate=16000
 TRANSPORT:    LiveKit Agents, `livekit.plugins.rime.TTS(model="coda", speaker="lyra", use_websocket=True)`
 ```
 
-These six values must always match `CONTRACTS.md` Section 6 and
+These six values must always match `CONTRACTS.md` Section 7 and
 `.env.example` exactly — update all three together, never one at a time.
 
 ## 4. Acceptance Test

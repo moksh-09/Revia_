@@ -229,12 +229,13 @@ revia/
 ├── PROGRESS.md           <- append-only step log with evidence.
 ├── RIME_EVIDENCE.md      <- hard voice claim + real test evidence, updated incrementally.
 ├── .env.example          <- placeholders only. Real .env is never committed.
+├── requirements.txt      <- shared, append-only. Each person adds only their own dependencies.
 ├── backend/
 │   ├── voice_io/         <- vedantk only. Mic capture, LiveKit transport, STT wiring.
 │   ├── rime/             <- vedantk only. Rime TTS integration, interruption detection, audio streaming out.
 │   ├── state/            <- vedantkhar only. Task Manager, state machine, fencing, interruption manager.
 │   ├── tools/            <- moksh only. Analytics functions, sales dataset access.
-│   └── orchestration/    <- shlok only. LLM wiring, agent brain, ties voice+state+tools together.
+│   ├── orchestration/    <- shlok only. LLM wiring, agent brain, ties voice+state+tools together.
 │   └── evaluation/       <- shlok only. Stress-test scenarios, metrics, evidence generation scripts.
 └── frontend/             <- untouched until Phase 2 (see Section 10, shlok's Phase 2 note). Owner: shlok.
 ```
@@ -268,7 +269,7 @@ Section 5. Fully parallel — no need to wait for anyone.
 **Build, in order:**
 1. Mic capture -> LiveKit transport -> Deepgram STT -> plain text output. Log to `PROGRESS.md` when a spoken sentence reliably becomes text.
 2. Wire STT output into the stubbed Task Manager interface from `CONTRACTS.md` Section 5. Log when a `task_id` is correctly requested for each utterance.
-3. Rime TTS integration using the locked config in `CONTRACTS.md` Section 6 (model=coda, voice=lyra, endpoint=wss://users-ws.rime.ai/ws3, pcm@16000, use_websocket=True).
+3. Rime TTS integration using the locked config in `CONTRACTS.md` Section 7 (model=coda, voice=lyra, endpoint=wss://users-ws.rime.ai/ws3, pcm@16000, use_websocket=True).
 4. Playback of Rime's streamed audio back into the LiveKit room.
 5. Interruption detection: on new user speech while Rime is speaking, emit the `interrupt` event exactly per `CONTRACTS.md` Section 2/3, and stop local playback immediately.
 6. Emit `speech.started` / `speech.stopped` events with `task_id` + `speech_id` per `CONTRACTS.md` Section 2.
@@ -288,7 +289,7 @@ Build in this exact order, one file at a time, and stop after each step so I can
 
 2. backend/voice_io/stub_task_client.py — implement the Stub Task Manager exactly per CONTRACTS.md Section 5. Wire step 1's transcribed output into it so each utterance requests a task_id.
 
-3. backend/rime/tts_rime.py — integrate Rime TTS using the exact locked configuration in CONTRACTS.md Section 6 (model=coda, speaker=lyra, endpoint=wss://users-ws.rime.ai/ws3, audio_format=pcm sample_rate=16000, use_websocket=True). Read RIME_API_KEY from .env.
+3. backend/rime/tts_rime.py — integrate Rime TTS using the exact locked configuration in CONTRACTS.md Section 7 (model=coda, speaker=lyra, endpoint=wss://users-ws.rime.ai/ws3, audio_format=pcm sample_rate=16000, use_websocket=True). Read RIME_API_KEY from .env.
 
 4. Extend backend/rime/tts_rime.py to stream the synthesized audio back into the LiveKit room for playback.
 

@@ -1,0 +1,19 @@
+# REVIA — shared dependencies file.
+# Append-only: add only your own lines, under your own section.
+# Never remove or edit another person's lines here.
+# Do not reorder sections — this keeps merges conflict-free.
+
+# --- vedantk (backend/voice_io/, backend/rime/) ---
+livekit-agents
+livekit-plugins-deepgram
+livekit-plugins-rime
+python-dotenv
+
+# --- vedantkhar (backend/state/) ---
+pytest
+
+# --- moksh (backend/tools/) ---
+pandas
+
+# --- shlok (backend/orchestration/, backend/evaluation/) ---
+groq
