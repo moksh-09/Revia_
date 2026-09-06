@@ -11,9 +11,12 @@ says it's finished. See `MASTER_README.md` Section 0, step 3 and Section 8.
 ## Format
 
 ```
-[YYYY-MM-DD HH:MM] [Person N] [Section/Step ref] DONE — <evidence: test name, command, or observed output>
-[YYYY-MM-DD HH:MM] [Person N] [Section/Step ref] BLOCKED — <what's blocking, and what stub/fallback is used instead>
+[YYYY-MM-DD HH:MM] [name] [Section/Step ref] DONE — <evidence: test name, command, or observed output>
+[YYYY-MM-DD HH:MM] [name] [Section/Step ref] BLOCKED — <what's blocking, and what stub/fallback is used instead>
 ```
+
+Use your real name exactly as it appears in `MASTER_README.md` Section 10:
+`vedantk`, `vedantkhar`, `moksh`, or `shlok`.
 
 ## How another person picks up work after someone else finishes a step
 

@@ -156,17 +156,22 @@ Voice + Task Events -> Evaluation Engine -> Metrics Store -> Reliability Dashboa
 
 | Component | Responsibility | Owner |
 |---|---|---|
-| Browser Microphone | Captures raw user audio | Person 1 |
-| LiveKit Realtime Transport | Media session, turn signaling, low-level VAD | Person 1 |
-| STT | Converts user audio to text | Person 1 |
-| Voice Agent | Orchestrates the turn end-to-end | Person 1 / Person 2 boundary |
-| Task / State Manager | Issues `task_id`s, owns the single source of truth for the active task | Person 2 |
-| Interruption Manager | Detects interruption, triggers audio stop, signals task invalidation | Person 2 |
-| LLM + Analytics Tools | Chooses and calls deterministic analytics functions, drafts the answer | Person 3 |
-| Response Validation | Confirms a result belongs to the still-active task/fence before it can proceed | Person 2 |
-| Rime TTS | Synthesizes the primary spoken output | Person 1 |
-| Evaluation Engine / Metrics Store / Dashboard | Parallel path — reads the same event stream, never sits in the critical path of the answer | Person 3 / Person 4 |
-| Voice UI / Timeline / Dashboard UI | User-facing surfaces | Person 4 |
+| Browser Microphone | Captures raw user audio | vedantk |
+| LiveKit Realtime Transport | Media session, turn signaling, low-level VAD | vedantk |
+| STT | Converts user audio to text | vedantk |
+| Rime TTS | Synthesizes the primary spoken output | vedantk |
+| Task / State Manager | Issues `task_id`s, owns the single source of truth for the active task | vedantkhar |
+| Interruption Manager | Detects interruption, triggers audio stop, signals task invalidation | vedantkhar |
+| Fencing / Response Validation | Confirms a result belongs to the still-active task/fence before it can proceed | vedantkhar |
+| Analytics Tools | Deterministic sales-data functions the agent can call | moksh |
+| LLM + Orchestration | Chooses and calls tools, drafts the answer, wires voice+state+tools together | shlok |
+| Evaluation Engine / Metrics / Evidence | Stress-test scenarios, real measurements, RIME_EVIDENCE.md generation | shlok |
+| Voice UI / Timeline / Dashboard UI | User-facing surfaces — **Phase 2, deferred until backend is integrated** | shlok (later) |
+
+**Phasing note:** Frontend work is intentionally deferred. All 4 people work
+on backend only until an integrator (see Section 10) merges working backend
+branches into `main`. Only then does frontend building start, against the
+real running backend rather than stubs.
 
 **Interruption is not a sequential pipeline stage.** It is a parallel
 control/event path that can preempt the pipeline above at any point — during
@@ -199,20 +204,20 @@ line. Add a new line at the bottom when, and only when, a step is complete
 and verified (test passed, output observed). Format:
 
 ```
-[YYYY-MM-DD HH:MM] [Person N] [Section/Step ref] DONE — <one-line evidence: test name, command run, or output observed>
+[YYYY-MM-DD HH:MM] [name] [Section/Step ref] DONE — <one-line evidence: test name, command run, or output observed>
 ```
 
 Example:
 
 ```
-[2026-09-10 14:20] [Person 2] [State machine transitions] DONE — pytest backend/state/test_transitions.py, 14/14 passed
-[2026-09-10 16:05] [Person 1] [Rime config locked] DONE — model=..., voice=..., endpoint=..., see .env.example
+[2026-09-10 14:20] [vedantkhar] [State machine transitions] DONE — pytest backend/state/test_transitions.py, 14/14 passed
+[2026-09-10 16:05] [vedantk] [Rime config locked] DONE — model=coda, voice=lyra, endpoint=wss://users-ws.rime.ai/ws3, see .env.example
 ```
 
 If a step is blocked, log that too, so others know not to depend on it yet:
 
 ```
-[2026-09-10 17:00] [Person 3] [Tool cancellation] BLOCKED — cancellation not supported by pandas query in progress; fencing implemented as fallback per CONTRACTS.md Section 4
+[2026-09-10 17:00] [moksh] [Tool cancellation] BLOCKED — cancellation not supported by pandas query in progress; fencing implemented as fallback per CONTRACTS.md Section 4
 ```
 
 ## 9. Repo Structure
@@ -225,84 +230,248 @@ revia/
 ├── RIME_EVIDENCE.md      <- hard voice claim + real test evidence, updated incrementally.
 ├── .env.example          <- placeholders only. Real .env is never committed.
 ├── backend/
-│   ├── rime/             <- Person 1 only. Rime TTS integration, audio streaming out.
-│   ├── voice_io/         <- Person 1 only. Mic capture, LiveKit transport, STT wiring.
-│   ├── state/            <- Person 2 only. Task Manager, state machine, fencing, interruption manager.
-│   ├── tools/             <- Person 3 only. Analytics functions, sales dataset access.
-│   └── evaluation/       <- Person 3 only. Stress-test scenarios (S01-S08), metrics, evidence generation scripts.
-└── frontend/             <- Person 4 only. Voice UI, conversation UI, timeline, reliability dashboard.
+│   ├── voice_io/         <- vedantk only. Mic capture, LiveKit transport, STT wiring.
+│   ├── rime/             <- vedantk only. Rime TTS integration, interruption detection, audio streaming out.
+│   ├── state/            <- vedantkhar only. Task Manager, state machine, fencing, interruption manager.
+│   ├── tools/            <- moksh only. Analytics functions, sales dataset access.
+│   └── orchestration/    <- shlok only. LLM wiring, agent brain, ties voice+state+tools together.
+│   └── evaluation/       <- shlok only. Stress-test scenarios, metrics, evidence generation scripts.
+└── frontend/             <- untouched until Phase 2 (see Section 10, shlok's Phase 2 note). Owner: shlok.
 ```
+
+**Phase 1 = backend only.** All 4 people work inside `backend/` in parallel.
+`frontend/` stays empty until an integrator (see below) merges working
+backend branches into `main` and hands off real, running behavior to build
+the UI against — no one builds frontend against guesses.
 
 **Ownership rule:** a person only ever creates, edits, or deletes files inside
 their own directory. Any change to a root-level file (`MASTER_README.md`,
 `CONTRACTS.md`) requires the whole team's agreement — no exceptions, no "just
 a quick fix."
 
+**Branches:** `main`, `vedantk`, `vedantkhar`, `moksh`, `shlok` — one branch
+per person, named after them directly. Nobody commits to `main` directly;
+`main` only receives merges at integration checkpoints (Section 11).
+
 ## 10. Per-Person Instructions
 
-Each subsection below is what that person (and their coding agent) works
-from. Read only your own subsection closely.
+Each subsection below is what that person's coding agent (Cursor, Antigravity,
+Codex, etc.) works from — paste the "Starter prompt" for your name directly
+into your agent to begin. Read only your own subsection closely.
 
-### Person 1 — Realtime Voice + Rime
-**Owns:** `backend/rime/`, `backend/voice_io/`
+### vedantk — Realtime Voice + Rime
+**Owns:** `backend/voice_io/`, `backend/rime/`
+**Branch:** `vedantk`
 **Depends on:** the `Task`/event schema in `CONTRACTS.md` Section 2 (from
-Person 2). If not yet built, code against the stub in `CONTRACTS.md`
-Section 5.
+vedantkhar). Not built yet -> code against the stub in `CONTRACTS.md`
+Section 5. Fully parallel — no need to wait for anyone.
 **Build, in order:**
-1. Mic capture -> LiveKit transport -> STT -> plain text output (no Rime yet). Log to `PROGRESS.md` when a spoken sentence reliably becomes text.
-2. Wire STT output into the stubbed Task Manager interface from `CONTRACTS.md`. Log when a `task_id` is correctly requested for each utterance.
-3. Rime TTS integration: pick and lock the exact model/voice/language/endpoint/audio format/transport from Rime's live catalog. Write this into `.env.example` and `RIME_EVIDENCE.md` Section 3 immediately.
-4. Playback of Rime's streamed audio to the browser.
-5. Interruption detection: on new user speech while Rime is speaking, emit the `interrupt` event exactly as defined in `CONTRACTS.md` Section 3, and stop local playback immediately.
-6. Emit `speech.started` / `speech.stopped` events with `task_id` + `speech_id` per `CONTRACTS.md` Section 3, so the state manager and timeline know exactly what the user actually heard.
-**Never:** invent a different event schema; commit any Rime credential anywhere (code, docs, screenshots, recordings).
+1. Mic capture -> LiveKit transport -> Deepgram STT -> plain text output. Log to `PROGRESS.md` when a spoken sentence reliably becomes text.
+2. Wire STT output into the stubbed Task Manager interface from `CONTRACTS.md` Section 5. Log when a `task_id` is correctly requested for each utterance.
+3. Rime TTS integration using the locked config in `CONTRACTS.md` Section 6 (model=coda, voice=lyra, endpoint=wss://users-ws.rime.ai/ws3, pcm@16000, use_websocket=True).
+4. Playback of Rime's streamed audio back into the LiveKit room.
+5. Interruption detection: on new user speech while Rime is speaking, emit the `interrupt` event exactly per `CONTRACTS.md` Section 2/3, and stop local playback immediately.
+6. Emit `speech.started` / `speech.stopped` events with `task_id` + `speech_id` per `CONTRACTS.md` Section 2.
+**Never:** invent a different event schema; commit any credential anywhere (code, docs, screenshots, recordings).
 
-### Person 2 — Agent + State + Task (build/freeze this interface first)
+**Starter prompt:**
+```
+Read MASTER_README.md, CONTRACTS.md, and PROGRESS.md in this repo fully before writing any code.
+
+Follow the Boot Sequence in MASTER_README.md Section 0. I am vedantk — work only inside backend/voice_io/ and backend/rime/. Never edit MASTER_README.md, CONTRACTS.md, or any other person's directory.
+
+My dependency (the real Task Manager in backend/state/, owned by vedantkhar) is not built yet. Build backend/voice_io/stub_task_client.py implementing the exact Stub Task Manager behavior described in CONTRACTS.md Section 5, and use that stub for now.
+
+Build in this exact order, one file at a time, and stop after each step so I can review before you continue:
+
+1. backend/voice_io/agent.py + backend/voice_io/stt_deepgram.py — a LiveKit Agents entrypoint that joins a room, captures microphone audio, sends it to Deepgram STT, and prints the transcribed text to console. Read credentials from .env (LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, DEEPGRAM_API_KEY) using python-dotenv. Never hardcode a key.
+
+2. backend/voice_io/stub_task_client.py — implement the Stub Task Manager exactly per CONTRACTS.md Section 5. Wire step 1's transcribed output into it so each utterance requests a task_id.
+
+3. backend/rime/tts_rime.py — integrate Rime TTS using the exact locked configuration in CONTRACTS.md Section 6 (model=coda, speaker=lyra, endpoint=wss://users-ws.rime.ai/ws3, audio_format=pcm sample_rate=16000, use_websocket=True). Read RIME_API_KEY from .env.
+
+4. Extend backend/rime/tts_rime.py to stream the synthesized audio back into the LiveKit room for playback.
+
+5. backend/rime/events.py — detect when the user starts speaking while Rime audio is still playing, and emit an `interrupt` event exactly matching CONTRACTS.md Section 2. Stop local playback immediately when this fires.
+
+6. Extend backend/rime/events.py to emit `speech.started` and `speech.stopped` events (with task_id and speech_id) per CONTRACTS.md Section 2.
+
+After each step is working and I've verified it, append one line to PROGRESS.md using my name "vedantk" in the exact format that file specifies. Never mark anything DONE without me confirming it actually ran. Never touch files outside backend/voice_io/ and backend/rime/.
+```
+
+### vedantkhar — State + Fencing (build/freeze this interface first)
 **Owns:** `backend/state/`
+**Branch:** `vedantkhar`
 **Depends on:** nothing upstream for the interface itself — this module's
-contract is what the other three build against. Prioritize finalizing the
-schema in `CONTRACTS.md` (as a team) before deep implementation.
+contract is what everyone else builds against. Fully parallel — start
+immediately, do not wait.
 **Build, in order:**
 1. Task object + state machine (`CREATED -> ACTIVE -> TOOL_RUNNING -> GENERATING -> SPEAKING -> COMPLETED`, plus `CANCELLED`/`OBSOLETE`/`FAILED` as terminal states). Log when all transitions have passing tests.
-2. Interruption handling: on receiving an `interrupt` event (from Person 1) at any non-terminal state, move the current task to `CANCELLED`/`OBSOLETE`, create a new task, mark it `ACTIVE`.
-3. Fencing: every async result (from Person 3's tools or the LLM) carries a `task_id` + `fence_token`. Implement the check that rejects any result whose task is not the currently active one — regardless of whether tool cancellation succeeded.
+2. Interruption handling: on receiving an `interrupt` event (from vedantk) at any non-terminal state, move the current task to `CANCELLED`/`OBSOLETE`, create a new task, mark it `ACTIVE`.
+3. Fencing: every async result (from moksh's tools or shlok's LLM) carries a `task_id` + `fence_token`. Implement the check that rejects any result whose task is not the currently active one — regardless of whether tool cancellation succeeded.
 4. Response validation gate: a generated response may only proceed to Rime if its task is still active at the moment of the check.
-5. Emit the full event timeline (task created/active/obsolete/cancelled/completed, with timestamps) for Person 4's dashboard and Person 3's evidence generation.
-**Never:** let any component other than the Task Manager write `status`; assume tool cancellation succeeded — always fence regardless.
+5. Emit the full event timeline (task created/active/obsolete/cancelled/completed, with timestamps) for shlok's evaluation and future dashboard work.
+**Never:** let any component other than this module write `status`; assume tool cancellation succeeded — always fence regardless.
 
-### Person 3 — Data + Evaluation
-**Owns:** `backend/tools/`, `backend/evaluation/`
+**Starter prompt:**
+```
+Read MASTER_README.md, CONTRACTS.md, and PROGRESS.md in this repo fully before writing any code.
+
+Follow the Boot Sequence in MASTER_README.md Section 0. I am vedantkhar — work only inside backend/state/. Never edit MASTER_README.md, CONTRACTS.md, or any other person's directory.
+
+My module is the interface everyone else builds against — CONTRACTS.md Section 1 (Task schema), Section 2 (events), Section 3 (interruption flow), Section 4 (tool contract) describe exactly what I must implement. Build stub_voice_client.py and stub_tool_client.py matching CONTRACTS.md Section 5 so I can test against fake upstream/downstream modules until vedantk and moksh's real code exists.
+
+Build in this exact order, stopping after each step for my review:
+
+1. backend/state/task.py — the Task object exactly per CONTRACTS.md Section 1. Only this module may ever write `status`.
+
+2. backend/state/state_machine.py — implement all transitions: CREATED -> ACTIVE -> TOOL_RUNNING -> GENERATING -> SPEAKING -> COMPLETED, plus CANCELLED/OBSOLETE/FAILED as terminal states that can never re-enter a non-terminal state. Write tests for every transition.
+
+3. backend/state/interruption_manager.py — on receiving an `interrupt` event (per CONTRACTS.md Section 2/3) at any non-terminal state, move the current task to CANCELLED or OBSOLETE, invalidate its fence_token, create a new task, mark it ACTIVE.
+
+4. backend/state/fencing.py — the check that rejects any `tool.result` whose fence_token doesn't match the currently active task's fence_token, regardless of whether tool cancellation succeeded. This is the single most important correctness rule in the whole project — never assume cancellation worked.
+
+5. backend/state/events.py — emit the full event timeline (task.created, task.active, task.tool_running, task.speaking, task.completed, task.cancelled, task.obsolete) exactly per CONTRACTS.md Section 2.
+
+After each step is working and I've verified it, append one line to PROGRESS.md using my name "vedantkhar" in the exact format that file specifies. Never mark anything DONE without me confirming it actually ran and passed. Never let any module other than this one write task status. Never touch files outside backend/state/.
+```
+
+### moksh — Data + Analytics Tools
+**Owns:** `backend/tools/`
+**Branch:** `moksh`
 **Depends on:** the tool-call and fencing contract in `CONTRACTS.md`
-Section 4 (from Person 2). If not yet built, code against the stub in
-`CONTRACTS.md` Section 5.
+Section 4 (from vedantkhar). Not built yet -> code against the stub in
+`CONTRACTS.md` Section 5. Fully parallel.
 **Build, in order:**
-1. Sales dataset + deterministic analytics functions (the actual queries REVIA can answer).
-2. Wire each analytics call to carry the `task_id`/`fence_token` per `CONTRACTS.md` Section 4 so Person 2's fencing can reject stale results.
-3. Stress-test scenarios: Scenario A (interrupt while speaking) and Scenario B (interrupt during tool execution), each with a fixed delay injected into a tool call to make the race reproducible on demand.
-4. Metrics: interruption count, stale-result count, stale-result rejection rate, response latency, time-to-first-audio, recovery time, task success rate — every value a real measurement, never invented.
-5. Evidence generation script that produces the acceptance-test PASS checklist output for `RIME_EVIDENCE.md`.
-**Never:** fabricate or estimate a metric; mark a scenario as passing without a captured run.
+1. Sales dataset + deterministic analytics functions (the actual queries REVIA can answer). Use synthetic data only — never real customer/financial data.
+2. Wire each analytics call to carry the `task_id`/`fence_token` per `CONTRACTS.md` Section 4 so vedantkhar's fencing can reject stale results.
+3. A configurable artificial delay parameter on tool calls, so Scenario B (interrupt during tool execution) is reliably reproducible on demand.
+**Never:** fabricate or estimate a result; make an analytics function non-deterministic — same input must always give the same output, since this is what gets fenced and tested.
 
-### Person 4 — Frontend + Integration
-**Owns:** `frontend/`
-**Depends on:** Person 1's speech events, Person 2's task timeline, Person
-3's metrics — all per `CONTRACTS.md`. Build against stubs for whichever
-isn't ready yet.
-**Build, in order:**
-1. Voice UI: mic control, conversation transcript, active-speaker/task indicator.
-2. Timeline view: renders the task-state event stream from Person 2 (created/active/obsolete/cancelled/completed) so a judge can see exactly what happened during a stress test.
-3. Reliability dashboard: renders Person 3's live metrics.
-4. Stress-test UI: a control to trigger Scenario A / Scenario B on demand for the live demo.
-5. Own final integration: at each checkpoint (Section 11), pull all four branches, wire real modules in place of stubs, and confirm the end-to-end flow matches `CONTRACTS.md` exactly.
-6. Deployment and demo recording support.
-**Never:** paper over an integration mismatch by changing your own contract expectations silently — flag it to the team instead.
+**Starter prompt:**
+```
+Read MASTER_README.md, CONTRACTS.md, and PROGRESS.md in this repo fully before writing any code.
 
-## 11. Integration Checkpoints (not just Day 5)
+Follow the Boot Sequence in MASTER_README.md Section 0. I am moksh — work only inside backend/tools/. Never edit MASTER_README.md, CONTRACTS.md, or any other person's directory.
 
-- **End of Day 2:** all four branches pulled together. Confirm: mic-to-Rime loop works end to end, and a basic interrupt stops speech (Scenario A only, rough).
-- **End of Day 3:** re-integrate. Confirm: fencing correctly rejects a stale tool result (Scenario B), full state timeline recorded.
-- **Day 4:** evidence + dashboard + stress-test UI wired to the real (not stubbed) pipeline.
-- **Day 5:** freeze. No new features. Final integration check, README/evidence completeness pass, demo recording, credential/secret check.
+My dependency (the real fencing/Task Manager in backend/state/, owned by vedantkhar) may not be built yet. Build a stub_task_client.py implementing the Stub Task Manager from CONTRACTS.md Section 5 so I can develop and test independently.
+
+Build in this exact order, stopping after each step for my review:
+
+1. backend/tools/dataset.py — load/prepare a realistic synthetic sales dataset. Never use real customer/financial data, per MASTER_README.md Section 17's "Design for real use" rule.
+
+2. backend/tools/analytics.py — deterministic analytics functions the voice agent can call (e.g. total sales by region, top products, trend over time). Every function must be deterministic — same input always gives same output.
+
+3. backend/tools/tool_client.py — wrap every analytics call with the exact request/response contract in CONTRACTS.md Section 4 (task_id, fence_token, tool_name, args in; task_id, fence_token, tool_name, result, error out). Add a configurable artificial delay parameter so race conditions are reliably reproducible for stress testing.
+
+After each step is working and I've verified it, append one line to PROGRESS.md using my name "moksh" in the exact format that file specifies. Never mark anything DONE without me confirming it actually ran. Never touch files outside backend/tools/.
+```
+
+### shlok — Orchestration + Evaluation (then Frontend, Phase 2)
+**Owns (Phase 1):** `backend/orchestration/`, `backend/evaluation/`
+**Owns (Phase 2, later):** `frontend/`
+**Branch:** `shlok`
+**Depends on:** all three other modules to actually integrate and test end
+to end. This role is **partially sequential** — the orchestration skeleton
+and evaluation scripts can be built against the Section 5 stubs in parallel
+with everyone else starting Day 1, but real, meaningful stress-test runs
+require vedantk, vedantkhar, and moksh's real modules to exist. Expect to
+do the most real testing work from Day 2 onward, once real pieces land.
+**Build, in order (Phase 1 — backend):**
+1. `backend/orchestration/agent_brain.py` — the LLM layer (Groq) that decides which analytics tool to call and drafts the spoken answer text, wired against the stubs from `CONTRACTS.md` Section 5 initially.
+2. `backend/evaluation/scenarios.py` — Scenario A (interrupt while Rime is speaking) and Scenario B (interrupt during a delayed tool call), as reproducible scripted tests, matching Section 2's definition exactly. Never treat these as two separate problems — one mechanism, two demonstrations.
+3. `backend/evaluation/metrics.py` — real, measured metrics only: interruption count, stale-result rejection rate, time-to-first-audio, recovery time. Never fabricate or estimate.
+4. `backend/evaluation/evidence_generator.py` — a script that runs the scenarios and outputs a PASS/FAIL checklist matching `RIME_EVIDENCE.md` Section 4's format.
+5. Once vedantk, vedantkhar, and moksh have real working modules merged into `main` (see Section 11), re-point `agent_brain.py` and the evaluation scripts at the real modules instead of stubs, and re-run everything for real evidence.
+**Phase 2 (later, after backend integration):** build `frontend/` — voice UI,
+timeline view, reliability dashboard, stress-test control panel — against
+the real running backend, using the Phase 2 prompt the integrator provides
+once `main` has a working backend.
+**Never:** fabricate or mock data to make evaluation output look complete;
+treat a stub-based test result as real evidence for `RIME_EVIDENCE.md`.
+
+**Starter prompt (Phase 1):**
+```
+Read MASTER_README.md, CONTRACTS.md, and PROGRESS.md in this repo fully before writing any code.
+
+Follow the Boot Sequence in MASTER_README.md Section 0. I am shlok — work only inside backend/orchestration/ and backend/evaluation/ for now (frontend/ comes later, Phase 2, once backend is integrated). Never edit MASTER_README.md, CONTRACTS.md, or any other person's directory.
+
+My work depends on all three other modules (voice/vedantk, state/vedantkhar, tools/moksh) to fully integrate, but I can start now against the stubs in CONTRACTS.md Section 5. Build stub_voice_client.py, stub_task_client.py, and stub_tool_client.py matching Section 5 so I can build and test in isolation until real modules land.
+
+Build in this exact order, stopping after each step for my review:
+
+1. backend/orchestration/agent_brain.py — an LLM layer using Groq that takes a transcribed request, decides which analytics tool to call (against the stub for now), and drafts a spoken-answer text response.
+
+2. backend/evaluation/scenarios.py — implement Scenario A (interrupt while Rime is speaking) and Scenario B (interrupt during a delayed tool call) as reproducible, scripted test scenarios, matching MASTER_README.md Section 2's definition exactly. Treat this as one mechanism with two demonstrations, never as two separate problems.
+
+3. backend/evaluation/metrics.py — real, measured metrics only: interruption count, stale-result rejection rate, time-to-first-audio, recovery time. Never fabricate or estimate a value, even against the stubs — mark stub-based numbers clearly as "stub test, not real evidence."
+
+4. backend/evaluation/evidence_generator.py — a script that runs the scenarios and outputs a PASS/FAIL checklist matching RIME_EVIDENCE.md Section 4's format.
+
+After each step is working and I've verified it, append one line to PROGRESS.md using my name "shlok" in the exact format that file specifies, and note clearly if a result came from stubs rather than real modules. Never touch files outside backend/orchestration/ and backend/evaluation/.
+```
+
+**Phase 2 prompt for shlok (do not use until the integrator says the backend is merged into `main` and working):**
+```
+Read MASTER_README.md and CONTRACTS.md in this repo fully before writing any code.
+
+Do NOT build against the stub interfaces in CONTRACTS.md Section 5 — the real backend is now merged into main and working. Pull the latest main and build directly against the real, running modules.
+
+Work only inside frontend/. Never edit MASTER_README.md, CONTRACTS.md, backend/, or PROGRESS.md's existing entries — only append your own new lines.
+
+Before writing any UI code, first read through the actual backend code in backend/state/events.py and backend/rime/events.py to see the real event names and payload shapes, and how to actually connect to them — do not assume CONTRACTS.md's stub shapes are unchanged if the real code differs; ask the integrator if anything is unclear.
+
+Build in this exact order, stopping after each step for review:
+
+1. A voice UI: mic control, live conversation transcript, an indicator showing which task_id is currently active and its state — wired to the real event stream.
+
+2. A timeline view rendering the actual task-state event stream (task.created/active/tool_running/speaking/obsolete/cancelled/completed) as it really comes from the backend.
+
+3. A reliability dashboard rendering the real live metrics from backend/evaluation/metrics.py.
+
+4. A stress-test control panel: buttons to trigger Scenario A and Scenario B for real against the live backend, for the demo recording.
+
+After each step is working and verified against the real backend, append one line to PROGRESS.md as "shlok" in the exact format specified. Never fabricate or mock data to make the UI look done — if a backend piece isn't ready when you reach it, stop and report rather than faking it.
+```
+
+## 11. Integration Checkpoints & The Integrator Role
+
+**vedantk acts as integrator** for Phase 1 (this can be reassigned by team
+agreement, but must be exactly one person, decided before Day 1 ends, so
+merges don't collide).
+
+- **End of Day 2:** integrator pulls `vedantk`, `vedantkhar`, `moksh` into
+  `main`. Confirm: mic-to-Rime loop works end to end, and a basic interrupt
+  stops speech (Scenario A only, rough). Resolve conflicts — should be
+  minimal since everyone stayed inside their own folder.
+- **End of Day 3:** re-integrate the same three branches. Confirm: fencing
+  correctly rejects a stale tool result (Scenario B), full state timeline
+  recorded. shlok's real (non-stub) evaluation runs against this merged
+  `main` from this point forward.
+- **Day 4:** integrator confirms `main` has a real, working backend, then
+  tells shlok to start Phase 2 (frontend) using the Phase 2 prompt above,
+  pulling from `main` directly — not from stubs.
+- **Day 5:** integrator merges `shlok`'s frontend branch into `main`. Freeze.
+  No new features. Final integration check, README/evidence completeness
+  pass, demo recording, credential/secret check.
+
+**Before merging anyone's branch, the integrator checks `PROGRESS.md` for
+that person's DONE entries with real evidence** — not just "looks
+finished." No evidence-backed entries for a claimed feature means test it
+yourself before merging, don't trust it blind.
+
+**To avoid push/pull/merge conflicts:**
+- Everyone stays inside their own folder — this alone prevents almost all
+  conflicts, since git only flags conflicts on lines/files two people both
+  touched.
+- Nobody commits directly to `main` except the integrator, and only at the
+  checkpoints above.
+- Before each checkpoint, everyone should `git push` their own branch first
+  so the integrator is merging the latest version, not stale local commits.
+- After each checkpoint, everyone should `git pull origin main` into their
+  own branch (`git checkout <name> && git merge main`) so their branch stays
+  aware of what actually landed, rather than working forever against
+  outdated stubs.
 
 ## 12. 5-Day Plan
 
@@ -378,7 +547,7 @@ reproducibility 20% · Rime integration/voice experience 20% · Demo clarity
   instead.
 - Never edit or create files outside your assigned directory (Section 9).
 - Never invent a different architecture than Section 6 / `CONTRACTS.md`.
-- Only the Task Manager (Person 2's module) writes task `status`. No other
+- Only the Task Manager (vedantkhar's module) writes task `status`. No other
   module may do so.
 - Every async result must carry `task_id` + `fence_token` and pass the
   fencing check before it can update state or be spoken.

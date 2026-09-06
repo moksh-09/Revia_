@@ -24,11 +24,11 @@ the interface it's delivered through.
 
 ```
 MODEL:        coda        (Rime's current flagship model; Arcana sunset 2026-08-15)
-VOICE:        astra
+VOICE:        lyra
 LANGUAGE:     eng
 ENDPOINT:     wss://users-ws.rime.ai/ws3
 AUDIO_FORMAT: pcm, sample_rate=16000
-TRANSPORT:    LiveKit Agents, `livekit.plugins.rime.TTS(model="coda", speaker="astra", use_websocket=True)`
+TRANSPORT:    LiveKit Agents, `livekit.plugins.rime.TTS(model="coda", speaker="lyra", use_websocket=True)`
 ```
 
 These six values must always match `CONTRACTS.md` Section 6 and

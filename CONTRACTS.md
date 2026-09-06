@@ -20,8 +20,8 @@ around it silently, and do not edit it unilaterally.
 }
 ```
 
-**Only the Task Manager (Person 2's module) may write `status`.** Every other
-module treats this object as read-only.
+**Only the Task Manager (vedantkhar's module, `backend/state/`) may write
+`status`.** Every other module treats this object as read-only.
 
 **Terminal states** (`COMPLETED`, `CANCELLED`, `OBSOLETE`, `FAILED`): once
 reached, a task can never re-enter a non-terminal state and can never become
@@ -34,69 +34,85 @@ include `speech_id`.
 
 | Event | Emitted by | Payload (in addition to task_id) |
 |---|---|---|
-| `task.created` | Person 2 (state) | `request_text`, `created_at` |
-| `task.active` | Person 2 (state) | `previous_task_id` (nullable) |
-| `task.tool_running` | Person 2 (state) | `tool_name` |
-| `task.generating` | Person 2 (state) | — |
-| `task.speaking` | Person 2 (state) | `speech_id` |
-| `task.completed` | Person 2 (state) | — |
-| `task.cancelled` | Person 2 (state) | `reason` |
-| `task.obsolete` | Person 2 (state) | `superseded_by_task_id` |
-| `task.failed` | Person 2 (state) | `error` |
-| `interrupt` | Person 1 (voice_io) | `detected_at`, `new_utterance_task_id` (if already transcribed) |
-| `speech.started` | Person 1 (rime) | `speech_id` |
-| `speech.stopped` | Person 1 (rime) | `speech_id`, `stopped_reason` (`completed` \| `interrupted`), `ms_spoken` |
-| `tool.result` | Person 3 (tools) | `fence_token`, `tool_name`, `result_payload`, `status` (`accepted` \| `rejected_stale`) |
+| `task.created` | vedantkhar (state) | `request_text`, `created_at` |
+| `task.active` | vedantkhar (state) | `previous_task_id` (nullable) |
+| `task.tool_running` | vedantkhar (state) | `tool_name` |
+| `task.generating` | vedantkhar (state) | — |
+| `task.speaking` | vedantkhar (state) | `speech_id` |
+| `task.completed` | vedantkhar (state) | — |
+| `task.cancelled` | vedantkhar (state) | `reason` |
+| `task.obsolete` | vedantkhar (state) | `superseded_by_task_id` |
+| `task.failed` | vedantkhar (state) | `error` |
+| `interrupt` | vedantk (voice_io) | `detected_at`, `new_utterance_task_id` (if already transcribed) |
+| `speech.started` | vedantk (rime) | `speech_id` |
+| `speech.stopped` | vedantk (rime) | `speech_id`, `stopped_reason` (`completed` \| `interrupted`), `ms_spoken` |
+| `tool.result` | moksh (tools) | `fence_token`, `tool_name`, `result_payload`, `status` (`accepted` \| `rejected_stale`) |
+| `llm.response_drafted` | shlok (orchestration) | `fence_token`, `response_text` |
 
 **Event bus transport (decided):** in-process pub/sub (e.g. an asyncio event
-emitter / queue within the agent process). All four modules run inside the
-same LiveKit Agents process for this project, so no external broker (Redis,
-etc.) is needed for the hackathon timeline. Revisit only if a module ends up
+emitter / queue within the agent process). All modules run inside the same
+LiveKit Agents process for this project, so no external broker (Redis, etc.)
+is needed for the hackathon timeline. Revisit only if a module ends up
 running as a genuinely separate service.
 
 ## 3. Interruption Flow (contract, not implementation)
 
 ```
 USER INTERRUPTION
- -> Person 1 detects it, emits `interrupt` (task_id = current active task)
- -> Person 2 (Task Manager) receives it:
+ -> vedantk detects it, emits `interrupt` (task_id = current active task)
+ -> vedantkhar (Task Manager) receives it:
     - moves current task to CANCELLED or OBSOLETE
     - invalidates its fence_token
     - requests cancellation of any in-flight tool call (best-effort)
     - creates a new task, marks it ACTIVE
- -> Person 1 receives the state change, stops queued/playing Rime audio
+ -> vedantk receives the state change, stops queued/playing Rime audio
     immediately regardless of whether the new task exists yet
- -> Person 3's in-flight tool call, if it completes anyway, emits `tool.result`
+ -> moksh's in-flight tool call, if it completes anyway, emits `tool.result`
     with the OLD fence_token
- -> Person 2 checks the fence_token against the currently active task's
+ -> vedantkhar checks the fence_token against the currently active task's
     fence_token: mismatch -> `status: rejected_stale`, discarded, never
-    passed to generation or Rime
+    passed to shlok's generation step or to Rime
 ```
 
 **Hard rule:** correctness never depends on tool cancellation actually
 succeeding. The fencing check (fence_token comparison) is the real safety
 net and must be applied to every result unconditionally.
 
-## 4. Tool Call Contract (Person 2 <-> Person 3)
+## 4. Tool Call Contract (vedantkhar <-> moksh, orchestrated by shlok)
 
-**Person 2 calls Person 3's tool with:**
+shlok's orchestration layer (`backend/orchestration/agent_brain.py`) decides
+*which* tool to call and drafts the answer text, but it never talks to
+moksh's tools directly with a bare request — every call is routed through
+vedantkhar's task/fence context, so a stale request can never slip through:
+
+```
+shlok's agent_brain.py
+  -> asks vedantkhar's Task Manager for the current task_id + fence_token
+  -> calls moksh's tool_client.py with { task_id, fence_token, tool_name, args }
+  -> moksh's tool returns { task_id, fence_token, tool_name, result, error }
+  -> vedantkhar's fencing layer checks fence_token before the result is
+     allowed to reach shlok's generation step or Rime
+```
+
+**moksh's tool receives:**
 ```json
 { "task_id": "...", "fence_token": "...", "tool_name": "...", "args": { } }
 ```
 
-**Person 3 returns:**
+**moksh's tool returns:**
 ```json
 { "task_id": "...", "fence_token": "...", "tool_name": "...", "result": { }, "error": null }
 ```
 
-Person 2's fencing layer checks the returned `fence_token` against the
-current active task's `fence_token` before accepting the result. Person 3
-does not need to know whether its result was ultimately accepted or
-rejected — that decision belongs entirely to Person 2's module.
+vedantkhar's fencing layer checks the returned `fence_token` against the
+current active task's `fence_token` before accepting the result. moksh's
+module does not need to know whether its result was ultimately accepted or
+rejected — that decision belongs entirely to vedantkhar's module.
 
 ## 5. Stub Interfaces (use these until the real module is done and logged in PROGRESS.md)
 
-**Stub Task Manager (for Person 1, Person 3, Person 4 to build against):**
+**Stub Task Manager** (for vedantk, moksh, shlok to build against until
+vedantkhar's real `backend/state/` is done):
 - Accepts a transcribed utterance, returns a new `task_id` + `fence_token`
   immediately, always sets status to `ACTIVE`.
 - On receiving an `interrupt` event, immediately emits `task.obsolete` for
@@ -104,53 +120,79 @@ rejected — that decision belongs entirely to Person 2's module.
 - Does not implement real fencing logic yet — always returns
   `status: accepted` for any `tool.result`.
 
-**Stub Rime output (for Person 2, Person 3, Person 4 to build against):**
+**Stub Rime/voice output** (for vedantkhar, moksh, shlok to build against
+until vedantk's real `backend/voice_io/` + `backend/rime/` is done):
 - Accepts text + `task_id`, immediately emits `speech.started` then, after a
   fixed fake delay, `speech.stopped` with `stopped_reason: completed`.
-- Does not actually call Rime.
+- Does not actually call Rime or capture real microphone audio.
 
-**Stub tool call (for Person 2, Person 4 to build against):**
+**Stub tool call** (for vedantkhar, shlok to build against until moksh's
+real `backend/tools/` is done):
 - Accepts `task_id` + `fence_token` + `tool_name`, waits a configurable fixed
   delay (default 3s, to simulate a slow analytics query), then returns a
   hardcoded result with the same `fence_token` it was given.
 
-## 6. Rime Configuration (locked)
+Each person builds whichever of these three stubs they personally need,
+inside their own directory (e.g. `backend/voice_io/stub_task_client.py`,
+`backend/tools/stub_task_client.py`, `backend/orchestration/stub_*.py`) —
+never inside another person's folder.
+
+## 6. LLM / Orchestration Configuration (locked)
+
+```
+LLM_PROVIDER: groq
+```
+
+Not mandated by the PS, but chosen because low inference latency matters
+directly for a voice agent (less silence before Rime starts speaking). Any
+LiveKit-Agents-compatible LLM provider would technically satisfy the
+architecture, but do not swap this without updating this line, `.env.example`,
+and telling the team.
+
+## 7. Rime Configuration (locked)
 
 ```
 MODEL:        coda        (Rime's current flagship model; Arcana was sunset 2026-08-15, so Coda is the only current production choice for new projects)
-VOICE:        astra       (clear, standard-American female voice; confirmed to work on Coda, Arcana, and both Mist versions as a fallback; prioritizes clean pronunciation of names/numbers, which matters for a sales-analytics assistant)
+VOICE:        lyra        (confirmed featured voice on Coda in Rime's own dashboard — female, ENG, age 18-30; clear delivery, good fit for a spoken sales-analyst persona)
 LANGUAGE:     eng
 ENDPOINT:     wss://users-ws.rime.ai/ws3   (Rime's flagship JSON WebSocket endpoint — supports Coda, lowest TTFB, word-level timestamps)
 AUDIO_FORMAT: pcm, sample_rate=16000   (LiveKit's Rime plugin default — pcm is uncompressed, which matters here: cutting audio off cleanly mid-interruption is more reliable on raw PCM than on a compressed codec like mp3)
-TRANSPORT:    LiveKit Agents, using `livekit.plugins.rime.TTS(model="coda", speaker="astra", use_websocket=True)` — use_websocket=True is required to get word-level timestamps and lower latency; the plugin defaults to plain HTTP without it
+TRANSPORT:    LiveKit Agents, using `livekit.plugins.rime.TTS(model="coda", speaker="lyra", use_websocket=True)` — use_websocket=True is required to get word-level timestamps and lower latency; the plugin defaults to plain HTTP without it
 ```
-
-If, after actually hearing `astra` read your real analyst-response text
-during Day 1 build-out, the team prefers a different voice, swap it — but
-change it here first, then everywhere else, in one sitting (see below).
 
 **Why /ws3 specifically:** it's the only endpoint Rime actively develops
 further, it supports Coda, and — most relevant to this project's hard voice
 problem — it returns **word-level timestamps**, which is the exact mechanism
 you need to know precisely what audio the user actually heard before an
-interruption cut it off (see MASTER_README.md Section 6, "what the user
-actually heard").
+interruption cut it off (see MASTER_README.md Section 6).
 
-**Configuration status:** fully locked. Model, voice, language, endpoint,
-audio format, and transport are all resolved against Rime's and LiveKit's
-current (Sept 2026) documentation. Nothing here requires a team meeting to
-proceed — only your own Rime API key (below) before Person 1 can start
-building against the real Rime API instead of the stub.
+**Configuration status:** fully locked. Nothing here requires a team meeting
+to proceed — only each person's own API key (Section 8 below) before their
+module can run against the real service instead of a stub.
 
-Copy all six values above into `.env.example` and `RIME_EVIDENCE.md`
+Copy the six Rime values above into `.env.example` and `RIME_EVIDENCE.md`
 Section 3 exactly as written here.
 
-**How to get the credential this config needs:**
-1. Sign up at https://app.rime.ai/signup/
-2. Copy your API key from https://app.rime.ai/tokens/
-3. Set `RIME_API_KEY` in your local `.env` (never commit this file)
-4. Add a placeholder-only line for it in `.env.example`:
-   `RIME_API_KEY=your_rime_api_key_here`
+## 8. Credentials — who needs what
+
+Not everyone needs every key. Only get and add what your own module uses:
+
+| Person | Needs in `.env` |
+|---|---|
+| vedantk | `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `DEEPGRAM_API_KEY`, `RIME_API_KEY` |
+| vedantkhar | None — pure logic module, no external API calls |
+| moksh | None — deterministic analytics on synthetic data, no external API calls |
+| shlok | `GROQ_API_KEY` (Phase 1); no new keys needed for Phase 2 frontend |
+
+**How to get each:**
+- **LiveKit:** sign up at https://cloud.livekit.io, create a project, copy URL/API key/API secret the instant they're generated (LiveKit only shows the secret once)
+- **Deepgram:** sign up at https://console.deepgram.com/signup, copy key from the console ($200 free credit, no card, doesn't expire)
+- **Rime:** sign up at https://app.rime.ai/signup/, copy key from https://app.rime.ai/tokens/ (check your dashboard's credit balance — it's a signup trial credit, not unlimited)
+- **Groq:** sign up at https://console.groq.com, create key under API Keys (free tier, no card)
+
+Everyone still copies `.env.example` to their own local `.env` even if they
+need zero keys — some shared config (e.g. dataset path, log level) may live
+there too as the project grows.
 
 ---
 
@@ -158,6 +200,9 @@ Section 3 exactly as written here.
 prior entry):
 
 ```
-[YYYY-MM-DD] Initial contract drafted, task/event/tool schemas agreed by all 4.
-[YYYY-MM-DD] Rime configuration fully locked: model=coda, voice=astra, language=eng, endpoint=wss://users-ws.rime.ai/ws3, audio_format=pcm@16000, transport=LiveKit rime plugin (use_websocket=True). Reasoning and sources recorded in Section 6.
+[2026-09-05] Initial contract drafted, task/event/tool schemas agreed by all 4.
+[2026-09-05] Rime configuration fully locked: model=coda, language=eng, endpoint=wss://users-ws.rime.ai/ws3, audio_format=pcm@16000, transport=LiveKit rime plugin (use_websocket=True).
+[2026-09-06] LLM provider locked to Groq (Section 6).
+[2026-09-06] Voice corrected from astra (unconfirmed on Coda) to lyra (confirmed featured voice on Coda per Rime's own dashboard).
+[2026-09-06] Restructured to real names (vedantk, vedantkhar, moksh, shlok) and 4-way backend-only split; orchestration/tool-call flow (Section 4) updated to include shlok's orchestration layer; credentials-by-person table added (Section 8).
 ```
