@@ -38,6 +38,7 @@ Use your real name exactly as it appears in `MASTER_README.md` Section 10:
 
 ```
 [2026-09-09 10:00] [All] [Day 0] DONE — CONTRACTS.md drafted and agreed by all 4 in sync call
+<<<<<<< HEAD
 [2026-09-06 18:27] [shlok] [Orchestration Step 1] DONE — stub_voice_client.py, stub_task_client.py, stub_tool_client.py, agent_brain.py built and smoke-tested. python -m backend.orchestration.agent_brain: EXIT 0, Groq tool-call correct (get_total_sales selected, spoken answer drafted), both stub tests PASS. Model: openai/gpt-oss-20b on Groq. [STUB TEST -- not real evidence for RIME_EVIDENCE.md]
 [2026-09-06 18:38] [shlok] [Evaluation Step 2] DONE — backend/evaluation/scenarios.py: Scenario A PASS (8/8 checks, 2 N/A), Scenario B PASS (8/8 checks, 2 N/A). python -m backend.evaluation.scenarios: EXIT 0. ScenA: speech.stopped=interrupted at 1011ms, T1->OBSOLETE, T2 answered. ScenB: fence_token mismatch detected at t=5.80s (interrupt at 2.01s), stale result rejected, never spoken. [STUB TEST -- not real evidence for RIME_EVIDENCE.md]
 [2026-09-06 18:43] [shlok] [Evaluation Step 3] DONE — backend/evaluation/metrics.py: all 4 metrics computed from real timestamps. ScenA: interruptions=1, stale_rate=0.0%, ttfa=2105ms, recovery=2179ms. ScenB: interruptions=1, stale_rate=100.0%, ttfa=6046ms, recovery=9840ms. Both assertion sets PASS. EXIT 0. [STUB TEST -- not real evidence for RIME_EVIDENCE.md]
@@ -50,4 +51,9 @@ Use your real name exactly as it appears in `MASTER_README.md` Section 10:
 [2026-09-06 18:46] [vedantk] [Step 5 — Interrupt playback] DONE — lk agent console backend\voice_io\agent.py; interrupt event emitted and RIME PLAYBACK STOPPED with reason=interrupted
 [2026-09-06 19:02] [vedantk] [Step 6 — Speech lifecycle events] DONE — lk agent console backend\voice_io\agent.py; speech.started/speech.stopped emitted with task_id, speech_id, stopped_reason, and ms_spoken
 [2026-09-06 18:57] [vedantk] [Endpointing tuning] DONE — lk agent console backend\voice_io\agent.py; flowing request committed as one task with no late-transcript warning
+=======
+[2026-09-06 17:21] [moksh] [Step 1 — Sales dataset] DONE — python3 backend/tools/dataset.py; observed Records: 600 and first record with date=2026-01-01, region=North, product=Laptop
+[2026-09-06 17:21] [moksh] [Step 2 — Deterministic analytics] DONE — verified total_sales through ToolClient; observed result=105693000
+[2026-09-06 17:21] [moksh] [Step 3 — Tool client] DONE — verified 3-second artificial delay (Elapsed: 3.01 seconds) and unknown-tool error handling
+>>>>>>> origin/moksh
 ```
