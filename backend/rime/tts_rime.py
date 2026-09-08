@@ -37,7 +37,7 @@ def queue_rime_speech(session: AgentSession, text: str):
     """Queue Rime-generated speech for playback in the active LiveKit room."""
     return session.say(
         text,
-        allow_interruptions=True,
+        allow_interruptions=False,
         add_to_chat_ctx=False,
     )
 

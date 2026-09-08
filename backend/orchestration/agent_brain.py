@@ -5,22 +5,22 @@ LLM orchestration layer -- shlok, REVIA Phase 1.
 
 Responsibilities (CONTRACTS.md Section 4 / MASTER_README.md Section 6):
   1. Receive a transcribed user utterance.
-  2. Call Groq (openai/gpt-oss-20b) to decide which analytics tool to
-     call (or none if the question can be answered directly).
-  3. Call the tool through stub_tool_client (later: moksh's real module).
+  2. Call Groq (openai/gpt-oss-20b) to decide whether an optional generic
+     delayed tool is needed (or answer directly).
+  3. Call the optional tool through the generic tool client.
   4. Pass tool result + original request back to Groq to draft a spoken-answer
      text response.
   5. Emit llm.response_drafted { fence_token, response_text } per CONTRACTS.md
      Section 2.
-  6. Pass the response text to stub_voice_client for spoken output.
+  6. Validate the drafted response against the active task fence.
+  7. Pass the response text to the voice client for spoken output.
 
 Wiring:
   - Reads GROQ_API_KEY from .env (python-dotenv). Never hardcodes a key.
-  - Uses stub_task_client for task_id + fence_token management.
-  - Uses stub_tool_client for analytics calls.
-  - Uses stub_voice_client for spoken output.
-  - All stubs are swappable for real modules without changing this file's
-    public interface.
+  - Uses TaskManager (real) or stub_task_client for task_id + fence_token.
+  - Uses the generic delayed stub tool when a tool client is not injected.
+  - Uses LiveKitRimeVoiceClient, stub_voice_client, or similar for speech.
+  - Real modules are the default; pass explicit stubs for isolated evaluation.
 
 Owner: shlok (backend/orchestration/).
 """
@@ -34,14 +34,16 @@ import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Protocol
 
 from dotenv import load_dotenv
 from groq import AsyncGroq
 
 from backend.orchestration.stub_task_client import StubTaskClient, Task, TaskEvent
-from backend.orchestration.stub_tool_client import StubToolClient, ToolRequest, ToolResponse
+from backend.orchestration.stub_tool_client import StubToolClient
+from backend.orchestration.tool_contract import ToolRequest, ToolResponse
 from backend.orchestration.stub_voice_client import StubVoiceClient, SpeechEvent
+from backend.state.task_manager import TaskManager
 
 load_dotenv()
 
@@ -66,6 +68,25 @@ class LLMResponseDraftedEvent:
 EventListener = Callable[[Any], None]
 
 
+class TaskClientProtocol(Protocol):
+    def create_task(self, request_text: str) -> Any: ...
+    def check_fence(self, task_id: str, fence_token: str) -> str: ...
+    def check_llm_response(self, llm_response: dict) -> str: ...
+    def complete_task(self, task_id: str) -> None: ...
+    def on_event(self, listener: EventListener) -> None: ...
+    def off_event(self, listener: EventListener) -> None: ...
+
+
+class ToolClientProtocol(Protocol):
+    async def call_tool(self, request: ToolRequest) -> ToolResponse: ...
+
+
+class VoiceClientProtocol(Protocol):
+    async def speak(self, text: str, task_id: str) -> str: ...
+    def on_event(self, listener: EventListener) -> None: ...
+    def off_event(self, listener: EventListener) -> None: ...
+
+
 # ---------------------------------------------------------------------------
 # Tool definitions passed to Groq for tool-selection
 # ---------------------------------------------------------------------------
@@ -74,97 +95,18 @@ _TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
-            "name": "get_total_sales",
+            "name": "delayed_demo_work",
             "description": (
-                "Returns total sales revenue for a given period. "
-                "Use when the user asks about overall/total revenue or sales figures."
+                "Runs a neutral delayed demonstration workload. Use only when "
+                "the user explicitly asks to run the delayed demonstration."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "period": {
+                    "label": {
                         "type": "string",
-                        "description": "Time period, e.g. 'Q1 2026', 'last month'.",
-                    }
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_sales_by_region",
-            "description": (
-                "Returns sales broken down by geographic region. "
-                "Use when the user asks about regional performance or comparisons."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "period": {
-                        "type": "string",
-                        "description": "Time period, e.g. 'Q1 2026'.",
-                    }
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_top_products",
-            "description": (
-                "Returns the top-performing products by revenue or units sold. "
-                "Use when the user asks about best-sellers or product rankings."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "period": {"type": "string"},
-                    "limit": {
-                        "type": "integer",
-                        "description": "Number of top products to return.",
+                        "description": "Optional label for the demonstration workload.",
                     },
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_sales_trend",
-            "description": (
-                "Returns month-over-month or week-over-week sales trend. "
-                "Use when the user asks about trends, growth, or trajectory."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "period": {"type": "string"},
-                    "granularity": {
-                        "type": "string",
-                        "enum": ["monthly", "weekly"],
-                    },
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_rep_performance",
-            "description": (
-                "Returns individual sales rep performance metrics. "
-                "Use when the user asks about reps, salespeople, or individuals."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "period": {"type": "string"},
                 },
                 "required": [],
             },
@@ -173,17 +115,21 @@ _TOOL_DEFINITIONS = [
 ]
 
 _SYSTEM_PROMPT = """\
-You are REVIA, a voice-native sales data analyst. The user asks spoken questions
-about sales data and you answer concisely in natural spoken language (no markdown,
-no bullet lists -- answers must sound good when read aloud by a text-to-speech system).
+You are REVIA, a general conversational voice assistant focused on reliable
+full-duplex task switching. You can answer general knowledge questions and
+converse naturally and thoughtfully on any topic.
 
-You have access to analytics tools. When a user question requires data, call the
-appropriate tool. If the question can be answered without data (e.g. a greeting),
-answer directly without calling a tool.
+Always respond in natural, spoken conversational English (no markdown, no bullet
+lists, no asterisks -- answers must sound completely natural when read aloud by
+a text-to-speech system).
 
-Keep answers concise and conversational -- aim for 2-4 sentences maximum.
-Always refer to dollar amounts and percentages in a natural spoken way
-(say "four point eight million dollars" not "$4,800,000").
+Guidelines:
+1. For general conversation, questions, explanations, or assistance, answer
+   directly, intelligently, and helpfully.
+2. Use the optional delayed demonstration tool only when the user explicitly asks
+   for that demonstration workload.
+3. Keep spoken answers concise and conversational -- typically 2 to 4 sentences.
+4. Keep the conversation honest about what tools and information are available.
 """
 
 
@@ -210,27 +156,28 @@ class AgentBrain:
     """
     LLM orchestration layer for REVIA.
 
-    Wires: stub_task_client -> stub_tool_client -> Groq -> stub_voice_client.
+    Wires: task client -> tool client -> Groq -> voice client.
 
-    Each call to run() is for a single active task. If fencing rejects the
-    tool result mid-flight, run() returns early with aborted=True and
-    never passes anything to voice output.
+    Each call to run() or run_headless() is for a single task. If fencing rejects
+    the tool or LLM result mid-flight, it returns early with aborted=True and
+    never updates conversation state or passes anything to voice output.
     """
 
     def __init__(
         self,
-        task_client: Optional[StubTaskClient] = None,
-        tool_client: Optional[StubToolClient] = None,
-        voice_client: Optional[StubVoiceClient] = None,
+        task_client: Optional[TaskClientProtocol] = None,
+        tool_client: Optional[ToolClientProtocol] = None,
+        voice_client: Optional[VoiceClientProtocol] = None,
         groq_model: Optional[str] = None,
+        use_stubs: bool = False,
     ) -> None:
         """
         Args:
-            task_client:  Stub (or real) Task Manager. Created fresh if None.
-            tool_client:  Stub (or real) tool client. Created fresh if None.
-            voice_client: Stub (or real) voice client. Created fresh if None.
+            task_client:  Task Manager. Defaults to real TaskManager unless use_stubs.
+            tool_client:  Tool client. Defaults to the generic delayed stub unless injected.
+            voice_client: Voice client. Defaults to StubVoiceClient unless provided.
             groq_model:   Groq model name. Reads GROQ_MODEL from .env if None.
-                          Falls back to 'openai/gpt-oss-20b' if not set.
+            use_stubs:    When True, wire stub task/tool clients for isolated tests.
         """
         api_key = os.environ.get("GROQ_API_KEY")
         if not api_key:
@@ -240,11 +187,20 @@ class AgentBrain:
             )
         self._groq = AsyncGroq(api_key=api_key)
         self._model = groq_model or os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+        if not os.environ.get("GROQ_MODEL") and not groq_model:
+            logger.warning("GROQ_MODEL not set. Defaulting to openai/gpt-oss-20b.")
 
-        self._task_client = task_client or StubTaskClient()
-        self._tool_client = tool_client or StubToolClient()
-        self._voice_client = voice_client or StubVoiceClient()
+        if use_stubs:
+            self._task_client: Any = task_client or StubTaskClient()
+            self._tool_client: Any = tool_client or StubToolClient()
+        else:
+            self._task_client = task_client or TaskManager()
+            self._tool_client = tool_client or StubToolClient(delay_s=0)
+        self._voice_client: Any = voice_client or StubVoiceClient()
 
+        self._conversation_history: list[dict[str, str]] = []
+        self._conversation_turns: dict[int, dict[str, Optional[str]]] = {}
+        self._next_turn_sequence = 0
         self._listeners: list[EventListener] = []
         self._event_log: list[Any] = []
 
@@ -261,64 +217,205 @@ class AgentBrain:
         self._listeners.append(listener)
 
     @property
-    def task_client(self) -> StubTaskClient:
+    def task_client(self) -> Any:
         return self._task_client
 
     @property
-    def tool_client(self) -> StubToolClient:
+    def tool_client(self) -> Any:
         return self._tool_client
 
     @property
-    def voice_client(self) -> StubVoiceClient:
+    def voice_client(self) -> Any:
         return self._voice_client
 
-    async def run(self, request_text: str) -> RunResult:
+    def get_conversation_history(self) -> list[dict[str, str]]:
+        """Return a copy of the conversation history."""
+        self._refresh_conversation_history()
+        return list(self._conversation_history)
+
+    def clear_conversation_history(self) -> None:
+        """Clear conversation history."""
+        self._conversation_turns.clear()
+        self._conversation_history.clear()
+
+    def _start_conversation_turn(self, request_text: str) -> int:
+        """Record a user turn independently from execution completion."""
+        self._next_turn_sequence += 1
+        sequence = self._next_turn_sequence
+        self._conversation_turns[sequence] = {
+            "user": request_text,
+            "assistant": None,
+        }
+        self._refresh_conversation_history()
+        return sequence
+
+    def _refresh_conversation_history(self) -> None:
+        """Materialize conversation entries in input order."""
+        history: list[dict[str, str]] = []
+        for sequence in sorted(self._conversation_turns):
+            turn = self._conversation_turns[sequence]
+            user_text = turn.get("user")
+            assistant_text = turn.get("assistant")
+            if user_text is not None:
+                history.append({"role": "user", "content": user_text})
+            if assistant_text is not None:
+                history.append({"role": "assistant", "content": assistant_text})
+        self._conversation_history = history
+
+    def _history_before_turn(self, sequence: int) -> list[dict[str, str]]:
+        """Return committed/pending prior turns, excluding the current user turn."""
+        history: list[dict[str, str]] = []
+        for turn_sequence in sorted(self._conversation_turns):
+            if turn_sequence >= sequence:
+                break
+            turn = self._conversation_turns[turn_sequence]
+            user_text = turn.get("user")
+            assistant_text = turn.get("assistant")
+            if user_text is not None:
+                history.append({"role": "user", "content": user_text})
+            if assistant_text is not None:
+                history.append({"role": "assistant", "content": assistant_text})
+        return history
+
+    def _commit_assistant_response(self, sequence: int, response_text: str) -> None:
+        """Commit one already-authorized assistant response exactly once."""
+        turn = self._conversation_turns.get(sequence)
+        if turn is None or turn.get("assistant") is not None:
+            return
+        turn["assistant"] = response_text
+        self._refresh_conversation_history()
+
+    def _is_status_query(self, text: str) -> bool:
+        """Check if user query is asking for task status."""
+        normalized = text.lower().strip()
+        status_triggers = [
+            "are you still working",
+            "are you still working on that",
+            "what is the status",
+            "what's the status",
+            "what are you doing",
+            "is it done yet",
+            "any update",
+            "status update",
+        ]
+        return any(t in normalized for t in status_triggers)
+
+    def _is_cancellation_query(self, text: str) -> bool:
+        """Check if user query is requesting cancellation."""
+        normalized = text.lower().strip()
+        cancel_triggers = [
+            "cancel that",
+            "cancel the request",
+            "cancel task",
+            "stop that",
+            "never mind",
+            "nevermind",
+            "forget it",
+            "abort that",
+        ]
+        return any(t in normalized for t in cancel_triggers)
+
+    def _should_consult_tool_router(self, text: str) -> bool:
+        """Route only explicit delayed-demo requests through tool selection."""
+        normalized = " ".join(text.lower().split())
+        return any(
+            phrase in normalized
+            for phrase in (
+                "delayed_demo_work",
+                "delayed demo",
+                "delayed demonstration",
+                "delayed operation",
+            )
+        )
+
+    async def run_headless(self, request_text: str) -> RunResult:
         """
-        Process one user utterance end-to-end.
-
-        Steps:
-          1. Create task (task_id + fence_token).
-          2. Call Groq to decide which tool to use (if any).
-          3. Call the tool (with fence_token -- vedantkhar checks this).
-          4. Check fence (stub: always accepted; real: rejects stale tokens).
-          5. Call Groq to draft the spoken answer text.
-          6. Emit llm.response_drafted.
-          7. Pass text to voice client.
-
-        Returns RunResult. If fencing rejects (aborted=True), no speech occurs.
+        Process one user utterance end-to-end, but DO NOT pass to voice client.
+        Useful when the caller (like agent.py) manages its own voice output.
         """
         run_events: list[Any] = []
+        turn_sequence = self._start_conversation_turn(request_text)
 
-        # Capture events from this run
         def _capture(event: Any) -> None:
             run_events.append(event)
             self._record_event(event)
 
-        # Temporarily add a scoped listener -- we'll remove it after the run
         self._task_client.on_event(_capture)
-        self._voice_client.on_event(_capture)
 
         try:
-            # --- Step 1: Create task ---
+            # Handle cancellation if requested
+            if self._is_cancellation_query(request_text):
+                if hasattr(self._task_client, "cancel_active_task"):
+                    self._task_client.cancel_active_task("user_cancelled")
+                task = self._task_client.create_task(request_text)
+                task_id = task.task_id
+                fence_token = task.fence_token
+                response_text = "I have cancelled that request. What else can I help you with?"
+                self._commit_assistant_response(turn_sequence, response_text)
+                return RunResult(
+                    task_id=task_id,
+                    fence_token=fence_token,
+                    request_text=request_text,
+                    tool_name=None,
+                    tool_result=None,
+                    response_text=response_text,
+                    speech_id=None,
+                    events=run_events,
+                    aborted=False,
+                )
+
+            # Handle status inquiry
+            if self._is_status_query(request_text):
+                active_t = getattr(self._task_client, "get_active_task", lambda: None)()
+                status_str = getattr(active_t, "status", None)
+                if status_str and str(status_str).endswith("TOOL_RUNNING"):
+                    response_text = "I am still working on retrieving your data."
+                elif status_str and str(status_str).endswith("CANCELLED"):
+                    response_text = "That request was cancelled."
+                elif status_str and str(status_str).endswith("COMPLETED"):
+                    response_text = "I have already finished that request."
+                else:
+                    response_text = "I am ready and listening. How can I help you?"
+                task = self._task_client.create_task(request_text)
+                task_id = task.task_id
+                fence_token = task.fence_token
+                return RunResult(
+                    task_id=task_id,
+                    fence_token=fence_token,
+                    request_text=request_text,
+                    tool_name=None,
+                    tool_result=None,
+                    response_text=response_text,
+                    speech_id=None,
+                    events=run_events,
+                    aborted=False,
+                )
+
             task = self._task_client.create_task(request_text)
+            task_id = task.task_id
+            fence_token = task.fence_token
             logger.info(
-                "[Brain] run START  task_id=%s  fence=%s  request=%r",
-                task.task_id, task.fence_token, request_text[:80],
+                "[Brain] run_headless START  task_id=%s  fence=%s  request=%r",
+                task_id, fence_token, request_text[:80],
             )
 
-            # --- Step 2: Decide tool ---
-            tool_name, tool_args = await self._decide_tool(request_text)
+            if self._should_consult_tool_router(request_text):
+                tool_name, tool_args = await self._decide_tool(request_text, turn_sequence)
+            else:
+                tool_name, tool_args = None, None
             logger.info(
                 "[Brain] tool decision  task_id=%s  tool=%s  args=%s",
-                task.task_id, tool_name, tool_args,
+                task_id, tool_name, tool_args,
             )
 
-            # --- Step 3: Call tool (if needed) ---
             tool_result: Optional[dict] = None
             if tool_name is not None:
+                if hasattr(self._task_client, "start_tool_running"):
+                    self._task_client.start_tool_running(task_id, tool_name)
+
                 tool_req = ToolRequest(
-                    task_id=task.task_id,
-                    fence_token=task.fence_token,
+                    task_id=task_id,
+                    fence_token=fence_token,
                     tool_name=tool_name,
                     args=tool_args or {},
                 )
@@ -327,11 +424,11 @@ class AgentBrain:
                 except asyncio.CancelledError:
                     logger.warning(
                         "[Brain] tool call cancelled  task_id=%s  tool=%s",
-                        task.task_id, tool_name,
+                        task_id, tool_name,
                     )
                     return RunResult(
-                        task_id=task.task_id,
-                        fence_token=task.fence_token,
+                        task_id=task_id,
+                        fence_token=fence_token,
                         request_text=request_text,
                         tool_name=tool_name,
                         tool_result=None,
@@ -342,16 +439,18 @@ class AgentBrain:
                         abort_reason="tool_call_cancelled",
                     )
 
-                # --- Step 4: Fence check ---
-                fence_status = self._task_client.check_fence(tool_resp.fence_token)
+                fence_status = self._task_client.check_fence(
+                    tool_resp.task_id,
+                    tool_resp.fence_token,
+                )
                 if fence_status != "accepted":
                     logger.warning(
                         "[Brain] STALE RESULT REJECTED  task_id=%s  fence=%s  status=%s",
-                        task.task_id, tool_resp.fence_token, fence_status,
+                        task_id, tool_resp.fence_token, fence_status,
                     )
                     return RunResult(
-                        task_id=task.task_id,
-                        fence_token=task.fence_token,
+                        task_id=task_id,
+                        fence_token=fence_token,
                         request_text=request_text,
                         tool_name=tool_name,
                         tool_result=None,
@@ -365,44 +464,306 @@ class AgentBrain:
                 tool_result = tool_resp.result
                 logger.info(
                     "[Brain] tool result accepted  task_id=%s  tool=%s",
-                    task.task_id, tool_name,
+                    task_id, tool_name,
                 )
 
-            # --- Step 5: Draft spoken answer ---
+            if hasattr(self._task_client, "start_generating"):
+                self._task_client.start_generating(task_id)
+
             response_text = await self._draft_response(
                 request_text=request_text,
                 tool_name=tool_name,
                 tool_result=tool_result,
+                turn_sequence=turn_sequence,
             )
             logger.info(
                 "[Brain] response drafted  task_id=%s  text=%r",
-                task.task_id, response_text[:120],
+                task_id, response_text[:120],
             )
 
-            # --- Step 6: Emit llm.response_drafted ---
             drafted_event = LLMResponseDraftedEvent(
-                task_id=task.task_id,
-                fence_token=task.fence_token,
+                task_id=task_id,
+                fence_token=fence_token,
                 response_text=response_text,
             )
             _capture(drafted_event)
             logger.info(
                 "[Brain] llm.response_drafted  task_id=%s  fence=%s",
-                task.task_id, task.fence_token,
+                task_id, fence_token,
             )
 
-            # --- Step 7: Speak the answer ---
-            speech_id = await self._voice_client.speak(
-                text=response_text,
-                task_id=task.task_id,
-            )
+            llm_payload = {
+                "task_id": task_id,
+                "fence_token": fence_token,
+                "response_text": response_text,
+            }
+            llm_status = self._task_client.check_llm_response(llm_payload)
+            if llm_status != "accepted":
+                logger.warning(
+                    "[Brain] STALE LLM RESPONSE REJECTED  task_id=%s  fence=%s  status=%s",
+                    task_id, fence_token, llm_status,
+                )
+                return RunResult(
+                    task_id=task_id,
+                    fence_token=fence_token,
+                    request_text=request_text,
+                    tool_name=tool_name,
+                    tool_result=tool_result,
+                    response_text="",
+                    speech_id=None,
+                    events=run_events,
+                    aborted=True,
+                    abort_reason="stale_llm_response_rejected",
+                )
 
-            # Mark task complete
-            self._task_client.complete_task(task.task_id)
+            # The user turn was recorded at input time; commit only the
+            # assistant response after the existing authority check succeeds.
+            self._commit_assistant_response(turn_sequence, response_text)
 
             return RunResult(
-                task_id=task.task_id,
-                fence_token=task.fence_token,
+                task_id=task_id,
+                fence_token=fence_token,
+                request_text=request_text,
+                tool_name=tool_name,
+                tool_result=tool_result,
+                response_text=response_text,
+                speech_id=None,
+                events=run_events,
+                aborted=False,
+            )
+
+        finally:
+            self._task_client.off_event(_capture)
+
+    async def run(self, request_text: str) -> RunResult:
+        """
+        Process one user utterance end-to-end.
+
+        Steps:
+          1. Create task (task_id + fence_token).
+          2. Call Groq to decide which tool to use (with conversation history).
+          3. Call the tool (with fence_token).
+          4. Check fence (rejects stale tokens).
+          5. Call Groq to draft spoken answer.
+          6. Emit llm.response_drafted.
+          7. Validate llm.response_drafted against the active task fence.
+          8. Pass text to voice client.
+
+        Returns RunResult. If fencing rejects (aborted=True), no speech occurs.
+        """
+        run_events: list[Any] = []
+        turn_sequence = self._start_conversation_turn(request_text)
+
+        def _capture(event: Any) -> None:
+            run_events.append(event)
+            self._record_event(event)
+
+        self._task_client.on_event(_capture)
+        self._voice_client.on_event(_capture)
+
+        try:
+            # Handle cancellation
+            if self._is_cancellation_query(request_text):
+                if hasattr(self._task_client, "cancel_active_task"):
+                    self._task_client.cancel_active_task("user_cancelled")
+                task = self._task_client.create_task(request_text)
+                task_id = task.task_id
+                fence_token = task.fence_token
+                response_text = "I have cancelled that request. What else can I help you with?"
+                speech_id = await self._voice_client.speak(text=response_text, task_id=task_id)
+                self._task_client.complete_task(task_id)
+                self._commit_assistant_response(turn_sequence, response_text)
+                return RunResult(
+                    task_id=task_id,
+                    fence_token=fence_token,
+                    request_text=request_text,
+                    tool_name=None,
+                    tool_result=None,
+                    response_text=response_text,
+                    speech_id=speech_id,
+                    events=run_events,
+                    aborted=False,
+                )
+
+            # Handle status inquiry
+            if self._is_status_query(request_text):
+                active_t = getattr(self._task_client, "get_active_task", lambda: None)()
+                status_str = getattr(active_t, "status", None)
+                if status_str and str(status_str).endswith("TOOL_RUNNING"):
+                    response_text = "I am still working on retrieving your data."
+                elif status_str and str(status_str).endswith("CANCELLED"):
+                    response_text = "That request was cancelled."
+                elif status_str and str(status_str).endswith("COMPLETED"):
+                    response_text = "I have already finished that request."
+                else:
+                    response_text = "I am ready and listening. How can I help you?"
+                task = self._task_client.create_task(request_text)
+                task_id = task.task_id
+                fence_token = task.fence_token
+                speech_id = await self._voice_client.speak(text=response_text, task_id=task_id)
+                self._task_client.complete_task(task_id)
+                return RunResult(
+                    task_id=task_id,
+                    fence_token=fence_token,
+                    request_text=request_text,
+                    tool_name=None,
+                    tool_result=None,
+                    response_text=response_text,
+                    speech_id=speech_id,
+                    events=run_events,
+                    aborted=False,
+                )
+
+            task = self._task_client.create_task(request_text)
+            task_id = task.task_id
+            fence_token = task.fence_token
+            logger.info(
+                "[Brain] run START  task_id=%s  fence=%s  request=%r",
+                task_id, fence_token, request_text[:80],
+            )
+
+            if self._should_consult_tool_router(request_text):
+                tool_name, tool_args = await self._decide_tool(request_text, turn_sequence)
+            else:
+                tool_name, tool_args = None, None
+            logger.info(
+                "[Brain] tool decision  task_id=%s  tool=%s  args=%s",
+                task_id, tool_name, tool_args,
+            )
+
+            tool_result: Optional[dict] = None
+            if tool_name is not None:
+                if hasattr(self._task_client, "start_tool_running"):
+                    self._task_client.start_tool_running(task_id, tool_name)
+
+                tool_req = ToolRequest(
+                    task_id=task_id,
+                    fence_token=fence_token,
+                    tool_name=tool_name,
+                    args=tool_args or {},
+                )
+                try:
+                    tool_resp = await self._tool_client.call_tool(tool_req)
+                except asyncio.CancelledError:
+                    logger.warning(
+                        "[Brain] tool call cancelled  task_id=%s  tool=%s",
+                        task_id, tool_name,
+                    )
+                    return RunResult(
+                        task_id=task_id,
+                        fence_token=fence_token,
+                        request_text=request_text,
+                        tool_name=tool_name,
+                        tool_result=None,
+                        response_text="",
+                        speech_id=None,
+                        events=run_events,
+                        aborted=True,
+                        abort_reason="tool_call_cancelled",
+                    )
+
+                fence_status = self._task_client.check_fence(
+                    tool_resp.task_id,
+                    tool_resp.fence_token,
+                )
+                if fence_status != "accepted":
+                    logger.warning(
+                        "[Brain] STALE RESULT REJECTED  task_id=%s  fence=%s  status=%s",
+                        task_id, tool_resp.fence_token, fence_status,
+                    )
+                    return RunResult(
+                        task_id=task_id,
+                        fence_token=fence_token,
+                        request_text=request_text,
+                        tool_name=tool_name,
+                        tool_result=None,
+                        response_text="",
+                        speech_id=None,
+                        events=run_events,
+                        aborted=True,
+                        abort_reason="stale_result_rejected",
+                    )
+
+                tool_result = tool_resp.result
+                logger.info(
+                    "[Brain] tool result accepted  task_id=%s  tool=%s",
+                    task_id, tool_name,
+                )
+
+            if hasattr(self._task_client, "start_generating"):
+                self._task_client.start_generating(task_id)
+
+            response_text = await self._draft_response(
+                request_text=request_text,
+                tool_name=tool_name,
+                tool_result=tool_result,
+                turn_sequence=turn_sequence,
+            )
+            logger.info(
+                "[Brain] response drafted  task_id=%s  text=%r",
+                task_id, response_text[:120],
+            )
+
+            drafted_event = LLMResponseDraftedEvent(
+                task_id=task_id,
+                fence_token=fence_token,
+                response_text=response_text,
+            )
+            _capture(drafted_event)
+            logger.info(
+                "[Brain] llm.response_drafted  task_id=%s  fence=%s",
+                task_id, fence_token,
+            )
+
+            llm_payload = {
+                "task_id": task_id,
+                "fence_token": fence_token,
+                "response_text": response_text,
+            }
+            llm_status = self._task_client.check_llm_response(llm_payload)
+            if llm_status != "accepted":
+                logger.warning(
+                    "[Brain] STALE LLM RESPONSE REJECTED  task_id=%s  fence=%s  status=%s",
+                    task_id, fence_token, llm_status,
+                )
+                return RunResult(
+                    task_id=task_id,
+                    fence_token=fence_token,
+                    request_text=request_text,
+                    tool_name=tool_name,
+                    tool_result=tool_result,
+                    response_text="",
+                    speech_id=None,
+                    events=run_events,
+                    aborted=True,
+                    abort_reason="stale_llm_response_rejected",
+                )
+
+            if hasattr(self._task_client, "start_speaking"):
+                self._task_client.start_speaking(task_id, f"speech-{task_id}")
+
+            speech_id = await self._voice_client.speak(
+                text=response_text,
+                task_id=task_id,
+            )
+
+            # Speech can yield to an interruption. Re-check before allowing
+            # the assistant response to enter conversational context.
+            final_context_status = self._task_client.check_llm_response(llm_payload)
+            if final_context_status != "accepted":
+                logger.warning(
+                    "[Brain] STALE CONTEXT RESPONSE REJECTED  task_id=%s fence=%s status=%s",
+                    task_id,
+                    fence_token,
+                    final_context_status,
+                )
+            else:
+                self._task_client.complete_task(task_id)
+                self._commit_assistant_response(turn_sequence, response_text)
+
+            return RunResult(
+                task_id=task_id,
+                fence_token=fence_token,
                 request_text=request_text,
                 tool_name=tool_name,
                 tool_result=tool_result,
@@ -413,7 +774,6 @@ class AgentBrain:
             )
 
         finally:
-            # Remove the scoped listeners via the public API
             self._task_client.off_event(_capture)
             self._voice_client.off_event(_capture)
 
@@ -422,40 +782,52 @@ class AgentBrain:
     # ------------------------------------------------------------------
 
     async def _decide_tool(
-        self, request_text: str
+        self, request_text: str, turn_sequence: Optional[int] = None
     ) -> tuple[Optional[str], Optional[dict]]:
         """
-        Ask Groq which tool to call for *request_text*.
+        Ask Groq which tool to call for *request_text* with conversational history.
 
         Returns (tool_name, args) or (None, None) if no tool is needed.
         """
-        messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": request_text},
-        ]
-
-        response = await self._groq.chat.completions.create(
-            model=self._model,
-            messages=messages,
-            tools=_TOOL_DEFINITIONS,
-            tool_choice="auto",
-            max_tokens=256,
-            temperature=0.0,   # deterministic tool selection
+        messages = [{"role": "system", "content": _SYSTEM_PROMPT}]
+        # Include the complete valid session context in input order.
+        history = (
+            self._history_before_turn(turn_sequence)
+            if turn_sequence is not None
+            else self._conversation_history
         )
+        messages.extend(history)
+        messages.append({"role": "user", "content": request_text})
 
-        choice = response.choices[0]
-        msg = choice.message
+        try:
+            response = await self._groq.chat.completions.create(
+                model=self._model,
+                messages=messages,
+                tools=_TOOL_DEFINITIONS,
+                tool_choice="auto",
+                max_tokens=256,
+                temperature=0.0,
+            )
 
-        if msg.tool_calls:
-            tc = msg.tool_calls[0]
-            tool_name = tc.function.name
-            try:
-                tool_args = json.loads(tc.function.arguments or "{}")
-            except json.JSONDecodeError:
-                tool_args = {}
-            return tool_name, tool_args
+            choice = response.choices[0]
+            msg = choice.message
 
-        # No tool call needed
+            if msg.tool_calls:
+                tc = msg.tool_calls[0]
+                tool_name = tc.function.name
+                # Validate against supported tools
+                valid_tools = {t["function"]["name"] for t in _TOOL_DEFINITIONS}
+                if tool_name not in valid_tools:
+                    logger.warning("[Brain] Unrecognized tool name %s, falling back to None", tool_name)
+                    return None, None
+                try:
+                    tool_args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    tool_args = {}
+                return tool_name, tool_args
+        except Exception as exc:
+            logger.warning("[Brain] _decide_tool failed: %s; falling back to direct conversation", exc)
+
         return None, None
 
     async def _draft_response(
@@ -463,51 +835,75 @@ class AgentBrain:
         request_text: str,
         tool_name: Optional[str],
         tool_result: Optional[dict],
+        turn_sequence: Optional[int] = None,
     ) -> str:
         """
-        Ask Groq to draft a spoken-answer text response.
-
-        If a tool result is available, it is included in the context.
-        The result must sound natural when spoken aloud by Rime TTS.
+        Ask Groq to draft a spoken-answer text response using context and data.
         """
         if tool_result is not None:
-            # Remove internal stub markers before passing to LLM
-            clean_result = {k: v for k, v in tool_result.items() if k != "_stub"}
+            clean_result = {k: v for k, v in tool_result.items() if k != "_stub"} if isinstance(tool_result, dict) else tool_result
             data_context = (
                 f"Tool called: {tool_name}\n"
                 f"Data returned: {json.dumps(clean_result, indent=2)}"
             )
             user_message = (
                 f"The user asked: {request_text}\n\n"
-                f"Here is the data you retrieved:\n{data_context}\n\n"
-                "Provide a concise spoken answer using this data. "
+                f"Here is the result returned by the tool:\n{data_context}\n\n"
+                "Provide a concise spoken answer using this result. "
                 "No markdown, no lists -- natural spoken language only."
             )
         else:
             user_message = request_text
 
-        messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
-        ]
-
-        response = await self._groq.chat.completions.create(
-            model=self._model,
-            messages=messages,
-            max_tokens=256,
-            temperature=0.3,
-            tool_choice="none",   # force text output; no tool-calling in draft step
+        messages = [{"role": "system", "content": _SYSTEM_PROMPT}]
+        history = (
+            self._history_before_turn(turn_sequence)
+            if turn_sequence is not None
+            else self._conversation_history
         )
+        messages.extend(history)
+        messages.append({"role": "user", "content": user_message})
 
-        content = response.choices[0].message.content
-        if not content or not content.strip():
-            # Model returned empty/None content -- can happen with some Groq models
-            # when they default to tool-calling mode in a non-tool request.
-            # Provide a safe fallback so the pipeline never delivers empty speech.
-            logger.warning(
-                "[Brain] _draft_response: model returned empty content, using fallback"
+        content = None
+        try:
+            response = await self._groq.chat.completions.create(
+                model=self._model,
+                messages=messages,
+                max_tokens=256,
+                temperature=0.3,
             )
-            content = "I have retrieved the data for your request."
+            content = response.choices[0].message.content
+        except Exception as exc:
+            logger.warning("[Brain] _draft_response primary call failed: %s; retrying with plain prompt", exc)
+            try:
+                retry_response = await self._groq.chat.completions.create(
+                    model=self._model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are REVIA, a friendly and intelligent voice AI. "
+                                "Answer the user's question directly in natural, spoken English. "
+                                "Do not output JSON, tool calls, or markdown formatting."
+                            ),
+                        },
+                        *history,
+                        {"role": "user", "content": user_message},
+                    ],
+                    max_tokens=256,
+                    temperature=0.3,
+                )
+                content = retry_response.choices[0].message.content
+            except Exception as exc2:
+                logger.error("[Brain] _draft_response fallback call also failed: %s", exc2)
+                content = None
+
+        if not content or not content.strip():
+            logger.warning("[Brain] _draft_response: model returned empty content, using fallback")
+            if tool_result is not None:
+                content = "The delayed operation completed for your request."
+            else:
+                content = "I understand. How else can I assist you?"
         return content.strip()
 
     # ------------------------------------------------------------------
@@ -541,6 +937,7 @@ if __name__ == "__main__":
 
         # Fast stubs: 1 s tool delay, 2 s fake speech
         brain = AgentBrain(
+            use_stubs=True,
             tool_client=StubToolClient(delay_s=1.0),
             voice_client=StubVoiceClient(speech_duration_s=2.0),
         )
@@ -548,9 +945,9 @@ if __name__ == "__main__":
         all_events: list[Any] = []
         brain.on_event(all_events.append)
 
-        # --- Test 1: question that needs a tool ---
+        # --- Test 1: explicit delayed demonstration workload ---
         print("\n--- Test 1: tool-calling question ---")
-        result = await brain.run("What are the total sales for Q1?")
+        result = await brain.run("Please run the delayed demonstration workload.")
         print(f"\nTask ID:       {result.task_id}")
         print(f"Fence token:   {result.fence_token}")
         print(f"Tool called:   {result.tool_name}")
@@ -559,7 +956,7 @@ if __name__ == "__main__":
         print(f"Aborted:       {result.aborted}")
         print(f"Event count:   {len(result.events)}")
         assert not result.aborted
-        assert result.tool_name == "get_total_sales"
+        assert result.tool_name == "delayed_demo_work"
         assert result.response_text
         assert result.speech_id
         print("PASS")

@@ -13,10 +13,7 @@ python-dotenv==1.2.3
 # --- vedantkhar (backend/state/) ---
 # NOTE: pytest not installed in shlok's environment; vedantkhar to pin exact version
 pytest
-
-# --- moksh (backend/tools/) ---
-# NOTE: pandas not installed in shlok's environment; moksh to pin exact version
-pandas
+pydantic
 
 # --- shlok (backend/orchestration/, backend/evaluation/) ---
 groq==1.7.0

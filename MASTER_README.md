@@ -49,10 +49,10 @@ stop and prioritize this rule over the feature.
 
 ## 1. Project
 
-REVIA is a voice agent that answers spoken questions about structured sales
-data, using Rime for all substantive spoken output. The user talks, the
-system analyzes data, Rime speaks the answer back — in realtime, and
-correctly even when interrupted or when a request changes mid-computation.
+REVIA is a general conversational voice agent focused on Reliable Full-Duplex
+Task Switching, using Rime for all substantive spoken output. The user talks,
+the system responds in realtime, and remains correct even when interrupted or
+when a request changes mid-computation.
 
 ## 2. The One Hard Voice Problem (do not split this into two problems)
 
@@ -68,7 +68,7 @@ proven with **two stress scenarios**:
   Queued Rime audio stops immediately, the task is invalidated, a new task
   takes over.
 - **Scenario B — Interrupt during tool execution.** User interrupts (or
-  changes their request) while a background analytics/tool call is still in
+  changes their request) while a background delayed tool call is still in
   flight. The stale result must never update state and must never be spoken,
   even if the tool call cannot be physically cancelled.
 
@@ -85,9 +85,8 @@ mechanism rather than two separate builds.
 
 ## 3. Target User
 
-An analyst or manager who wants quick spoken answers about sales data —
-hands-busy, asking natural follow-up questions, and prone to correcting or
-narrowing their own request mid-conversation the way people actually talk.
+A user who wants a hands-free conversational assistant that remains correct
+while they ask follow-ups, interrupt, refine, or change their request.
 
 ## 4. Why Voice Is Necessary
 
@@ -139,7 +138,7 @@ Task / State Manager
 Interruption Manager
  |
  v
-LLM + Deterministic Analytics Tools
+LLM + Optional Generic Delayed Tool
  |
  v
 Response Validation
@@ -163,7 +162,7 @@ Voice + Task Events -> Evaluation Engine -> Metrics Store -> Reliability Dashboa
 | Task / State Manager | Issues `task_id`s, owns the single source of truth for the active task | vedantkhar |
 | Interruption Manager | Detects interruption, triggers audio stop, signals task invalidation | vedantkhar |
 | Fencing / Response Validation | Confirms a result belongs to the still-active task/fence before it can proceed | vedantkhar |
-| Analytics Tools | Deterministic sales-data functions the agent can call | moksh |
+| Optional Delayed Tool | Neutral demonstration workload for task-switching tests | shlok |
 | LLM + Orchestration | Chooses and calls tools, drafts the answer, wires voice+state+tools together | shlok |
 | Evaluation Engine / Metrics / Evidence | Stress-test scenarios, real measurements, RIME_EVIDENCE.md generation | shlok |
 | Voice UI / Timeline / Dashboard UI | User-facing surfaces — **Phase 2, deferred until backend is integrated** | shlok (later) |
@@ -218,6 +217,10 @@ If a step is blocked, log that too, so others know not to depend on it yet:
 
 ```
 [2026-09-10 17:00] [moksh] [Tool cancellation] BLOCKED — cancellation not supported by pandas query in progress; fencing implemented as fallback per CONTRACTS.md Section 4
+
+The ownership and analytics entries below are historical scaffolding notes. The
+current runtime has no sales dataset or analytics product; only the neutral
+delayed demonstration workload remains where needed for task-switching tests.
 ```
 
 ## 9. Repo Structure
@@ -234,7 +237,7 @@ revia/
 │   ├── voice_io/         <- vedantk only. Mic capture, LiveKit transport, STT wiring.
 │   ├── rime/             <- vedantk only. Rime TTS integration, interruption detection, audio streaming out.
 │   ├── state/            <- vedantkhar only. Task Manager, state machine, fencing, interruption manager.
-│   ├── tools/            <- moksh only. Analytics functions, sales dataset access.
+│   ├── tools/            <- generic tool contracts only, when needed.
 │   ├── orchestration/    <- shlok only. LLM wiring, agent brain, ties voice+state+tools together.
 │   └── evaluation/       <- shlok only. Stress-test scenarios, metrics, evidence generation scripts.
 └── frontend/             <- untouched until Phase 2 (see Section 10, shlok's Phase 2 note). Owner: shlok.
@@ -337,17 +340,17 @@ Build in this exact order, stopping after each step for my review:
 After each step is working and I've verified it, append one line to PROGRESS.md using my name "vedantkhar" in the exact format that file specifies. Never mark anything DONE without me confirming it actually ran and passed. Never let any module other than this one write task status. Never touch files outside backend/state/.
 ```
 
-### moksh — Data + Analytics Tools
+### Historical analytics scaffolding (removed)
 **Owns:** `backend/tools/`
 **Branch:** `moksh`
 **Depends on:** the tool-call and fencing contract in `CONTRACTS.md`
 Section 4 (from vedantkhar). Not built yet -> code against the stub in
 `CONTRACTS.md` Section 5. Fully parallel.
 **Build, in order:**
-1. Sales dataset + deterministic analytics functions (the actual queries REVIA can answer). Use synthetic data only — never real customer/financial data.
-2. Wire each analytics call to carry the `task_id`/`fence_token` per `CONTRACTS.md` Section 4 so vedantkhar's fencing can reject stale results.
+1. The former sales dataset and deterministic analytics functions were temporary scaffolding and are removed from the current runtime.
+2. The generic delayed workload carries `task_id`/`fence_token` per `CONTRACTS.md` Section 4 so fencing can reject stale results.
 3. A configurable artificial delay parameter on tool calls, so Scenario B (interrupt during tool execution) is reliably reproducible on demand.
-**Never:** fabricate or estimate a result; make an analytics function non-deterministic — same input must always give the same output, since this is what gets fenced and tested.
+**Never:** present the delayed demonstration result as a real data source or internal database.
 
 **Starter prompt:**
 ```
@@ -359,11 +362,11 @@ My dependency (the real fencing/Task Manager in backend/state/, owned by vedantk
 
 Build in this exact order, stopping after each step for my review:
 
-1. backend/tools/dataset.py — load/prepare a realistic synthetic sales dataset. Never use real customer/financial data, per MASTER_README.md Section 17's "Design for real use" rule.
+1. The former `backend/tools/dataset.py` workload has been removed.
 
-2. backend/tools/analytics.py — deterministic analytics functions the voice agent can call (e.g. total sales by region, top products, trend over time). Every function must be deterministic — same input always gives same output.
+2. The former `backend/tools/analytics.py` workload has been removed.
 
-3. backend/tools/tool_client.py — wrap every analytics call with the exact request/response contract in CONTRACTS.md Section 4 (task_id, fence_token, tool_name, args in; task_id, fence_token, tool_name, result, error out). Add a configurable artificial delay parameter so race conditions are reliably reproducible for stress testing.
+3. `backend/orchestration/stub_tool_client.py` provides only the neutral delayed demonstration workload and preserves the generic request/response contract.
 
 After each step is working and I've verified it, append one line to PROGRESS.md using my name "moksh" in the exact format that file specifies. Never mark anything DONE without me confirming it actually ran. Never touch files outside backend/tools/.
 ```
@@ -379,7 +382,7 @@ with everyone else starting Day 1, but real, meaningful stress-test runs
 require vedantk, vedantkhar, and moksh's real modules to exist. Expect to
 do the most real testing work from Day 2 onward, once real pieces land.
 **Build, in order (Phase 1 — backend):**
-1. `backend/orchestration/agent_brain.py` — the LLM layer (Groq) that decides which analytics tool to call and drafts the spoken answer text, wired against the stubs from `CONTRACTS.md` Section 5 initially.
+1. `backend/orchestration/agent_brain.py` — the general conversational Groq layer, with optional neutral delayed-work invocation.
 2. `backend/evaluation/scenarios.py` — Scenario A (interrupt while Rime is speaking) and Scenario B (interrupt during a delayed tool call), as reproducible scripted tests, matching Section 2's definition exactly. Never treat these as two separate problems — one mechanism, two demonstrations.
 3. `backend/evaluation/metrics.py` — real, measured metrics only: interruption count, stale-result rejection rate, time-to-first-audio, recovery time. Never fabricate or estimate.
 4. `backend/evaluation/evidence_generator.py` — a script that runs the scenarios and outputs a PASS/FAIL checklist matching `RIME_EVIDENCE.md` Section 4's format.
@@ -401,7 +404,7 @@ My work depends on all three other modules (voice/vedantk, state/vedantkhar, too
 
 Build in this exact order, stopping after each step for my review:
 
-1. backend/orchestration/agent_brain.py — an LLM layer using Groq that takes a transcribed request, decides which analytics tool to call (against the stub for now), and drafts a spoken-answer text response.
+1. backend/orchestration/agent_brain.py — a general conversational Groq layer that may invoke the neutral delayed workload and drafts spoken-answer text.
 
 2. backend/evaluation/scenarios.py — implement Scenario A (interrupt while Rime is speaking) and Scenario B (interrupt during a delayed tool call) as reproducible, scripted test scenarios, matching MASTER_README.md Section 2's definition exactly. Treat this as one mechanism with two demonstrations, never as two separate problems.
 
@@ -488,7 +491,7 @@ yourself before merging, don't trust it blind.
 
 - [ ] Voice input works
 - [ ] STT works
-- [ ] Analytics tools work
+- [x] Neutral delayed demonstration workload supports task-switching tests
 - [ ] Agent works
 - [ ] Rime speaks normal responses
 - [ ] User can interrupt speech (Scenario A)
@@ -515,7 +518,7 @@ yourself before merging, don't trust it blind.
 | Time | Content |
 |---|---|
 | 0:00-0:30 | User + problem + why voice matters |
-| 0:30-1:15 | Normal voice analytics (happy path) |
+| 0:30-1:15 | Normal conversational voice (happy path) |
 | 1:15-2:00 | Scenario A: interrupt while Rime is speaking |
 | 2:00-2:45 | Scenario B: interrupt during a delayed tool call |
 | 2:45-3:30 | Timeline + stale-result evidence walkthrough |

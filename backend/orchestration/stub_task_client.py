@@ -219,8 +219,8 @@ class StubTaskClient:
             logger.warning("[StubTask] complete_task: unknown task_id=%s", task_id)
             return
         if task.status in {"COMPLETED", "CANCELLED", "OBSOLETE", "FAILED"}:
-            logger.warning(
-                "[StubTask] complete_task: task %s already terminal (%s)",
+            logger.debug(
+                "[StubTask] complete_task: task %s already terminal (%s) -- silently ignored",
                 task_id, task.status,
             )
             return
@@ -232,7 +232,7 @@ class StubTaskClient:
         logger.info("[StubTask] task.completed  task_id=%s", task_id)
         self._emit(TaskEvent(event="task.completed", task_id=task_id, payload={}))
 
-    def check_fence(self, fence_token: str) -> str:
+    def check_fence(self, task_id: str, fence_token: str) -> str:
         """
         Stub fence check -- always returns 'accepted'.
 
@@ -242,10 +242,48 @@ class StubTaskClient:
         the real safety logic.
         """
         logger.debug(
-            "[StubTask] check_fence  fence_token=%s  -> accepted (stub, no real fencing)",
+            "[StubTask] check_fence  task_id=%s fence_token=%s  -> accepted (stub, no real fencing)",
+            task_id,
             fence_token,
         )
         return "accepted"
+
+    def check_llm_response(self, llm_response: dict) -> str:
+        """Stub LLM gate -- always returns accepted."""
+        return "accepted"
+
+    def start_tool_running(self, task_id: str, tool_name: str) -> bool:
+        task = self._all_tasks.get(task_id)
+        if task and task.status == "ACTIVE":
+            task.status = "TOOL_RUNNING"
+            self._emit(TaskEvent(event="task.tool_running", task_id=task_id, payload={"tool_name": tool_name}))
+            return True
+        return False
+
+    def start_generating(self, task_id: str) -> bool:
+        task = self._all_tasks.get(task_id)
+        if task and task.status in ("ACTIVE", "TOOL_RUNNING"):
+            task.status = "GENERATING"
+            self._emit(TaskEvent(event="task.generating", task_id=task_id, payload={}))
+            return True
+        return False
+
+    def start_speaking(self, task_id: str, speech_id: str) -> bool:
+        task = self._all_tasks.get(task_id)
+        if task and task.status in ("ACTIVE", "GENERATING"):
+            task.status = "SPEAKING"
+            self._emit(TaskEvent(event="task.speaking", task_id=task_id, payload={"speech_id": speech_id}))
+            return True
+        return False
+
+    def cancel_active_task(self, reason: str = "user_cancelled") -> Optional[Task]:
+        if self._active_task and self._active_task.status not in ("COMPLETED", "CANCELLED", "OBSOLETE", "FAILED"):
+            task_id = self._active_task.task_id
+            self._active_task.status = "CANCELLED"
+            self._active_task.fence_token = ""
+            self._emit(TaskEvent(event="task.cancelled", task_id=task_id, payload={"reason": reason}))
+            return self._active_task
+        return None
 
     def get_active_task(self) -> Optional[Task]:
         """Return the currently active Task, or None."""
@@ -280,18 +318,18 @@ if __name__ == "__main__":
     client.on_event(events.append)
 
     print("\n=== Test 1: create_task ===")
-    t1 = client.create_task("What are total sales for Q1?")
+    t1 = client.create_task("Run the first request")
     assert t1.status == "ACTIVE"
     assert client.get_active_task().task_id == t1.task_id
     print(f"PASS: task created  task_id={t1.task_id}  fence={t1.fence_token}")
 
     print("\n=== Test 2: check_fence (stub -- always accepted) ===")
-    result = client.check_fence(t1.fence_token)
+    result = client.check_fence(t1.task_id, t1.fence_token)
     assert result == "accepted"
     print(f"PASS: check_fence -> {result}")
 
     print("\n=== Test 3: interrupt -> obsolete old, create new ===")
-    t2 = client.interrupt(t1.task_id, "Actually, show me Q2 sales.")
+    t2 = client.interrupt(t1.task_id, "Actually, change the request.")
     assert t2.status == "ACTIVE"
     assert client.get_task(t1.task_id).status == "OBSOLETE"
     assert client.get_active_task().task_id == t2.task_id

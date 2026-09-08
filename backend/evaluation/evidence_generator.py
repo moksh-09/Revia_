@@ -294,9 +294,11 @@ async def generate_evidence(
 
 def main() -> None:
     """Run evidence generation and print the full report to stdout."""
+    import sys as _sys
     logging.basicConfig(
-        level=logging.WARNING,    # suppress INFO noise; only show evidence output
-        format="%(message)s",
+        level=logging.ERROR,    # suppress all but errors; STALE RESULT log is INFO
+        format="[%(name)s] %(message)s",
+        stream=_sys.stdout,     # route to stdout to avoid PowerShell NativeCommandError
     )
 
     async def _run() -> bool:

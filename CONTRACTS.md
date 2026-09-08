@@ -129,8 +129,9 @@ until vedantk's real `backend/voice_io/` + `backend/rime/` is done):
 **Stub tool call** (for vedantkhar, shlok to build against until moksh's
 real `backend/tools/` is done):
 - Accepts `task_id` + `fence_token` + `tool_name`, waits a configurable fixed
-  delay (default 3s, to simulate a slow analytics query), then returns a
-  hardcoded result with the same `fence_token` it was given.
+  delay (default 3s, to simulate delayed work), then returns a neutral result
+  with the same `fence_token` it was given. This is a demonstration/test
+  workload, not a production data source.
 
 Each person builds whichever of these three stubs they personally need,
 inside their own directory (e.g. `backend/voice_io/stub_task_client.py`,
@@ -153,7 +154,7 @@ and telling the team.
 
 ```
 MODEL:        coda        (Rime's current flagship model; Arcana was sunset 2026-08-15, so Coda is the only current production choice for new projects)
-VOICE:        lyra        (confirmed featured voice on Coda in Rime's own dashboard — female, ENG, age 18-30; clear delivery, good fit for a spoken sales-analyst persona)
+VOICE:        lyra        (confirmed featured voice on Coda in Rime's own dashboard — female, ENG, age 18-30; clear delivery for conversational voice output)
 LANGUAGE:     eng
 ENDPOINT:     wss://users-ws.rime.ai/ws3   (Rime's flagship JSON WebSocket endpoint — supports Coda, lowest TTFB, word-level timestamps)
 AUDIO_FORMAT: pcm, sample_rate=16000   (LiveKit's Rime plugin default — pcm is uncompressed, which matters here: cutting audio off cleanly mid-interruption is more reliable on raw PCM than on a compressed codec like mp3)
@@ -181,7 +182,7 @@ Not everyone needs every key. Only get and add what your own module uses:
 |---|---|
 | vedantk | `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `DEEPGRAM_API_KEY`, `RIME_API_KEY` |
 | vedantkhar | None — pure logic module, no external API calls |
-| moksh | None — deterministic analytics on synthetic data, no external API calls |
+| Tool workload | None — neutral delayed demonstration, no external API calls |
 | shlok | `GROQ_API_KEY` (Phase 1); no new keys needed for Phase 2 frontend |
 
 **How to get each:**
@@ -191,7 +192,7 @@ Not everyone needs every key. Only get and add what your own module uses:
 - **Groq:** sign up at https://console.groq.com, create key under API Keys (free tier, no card)
 
 Everyone still copies `.env.example` to their own local `.env` even if they
-need zero keys — some shared config (e.g. dataset path, log level) may live
+need zero keys — some shared config (e.g. log level) may live
 there too as the project grows.
 
 ---

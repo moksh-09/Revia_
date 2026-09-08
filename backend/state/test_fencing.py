@@ -6,14 +6,14 @@ from backend.state.interruption import handle_interrupt
 from backend.state.fencing import validate_tool_result
 
 def test_happy_path_fencing():
-    task = Task(task_id="t1", fence_token="f1", request_text="sales in q1")
+    task = Task(task_id="t1", fence_token="f1", request_text="first request")
     task.transition_to(TaskStatus.ACTIVE)
     
     tool_result = {
         "task_id": "t1",
         "fence_token": "f1",
-        "tool_name": "get_sales",
-        "result": {"sales": 100},
+        "tool_name": "delayed_demo_work",
+        "result": {"message": "done"},
         "error": None
     }
     
@@ -21,14 +21,14 @@ def test_happy_path_fencing():
     assert validated["status"] == "accepted"
 
 def test_stale_task_id_rejected():
-    active_task = Task(task_id="t2", fence_token="f2", request_text="sales in q2")
+    active_task = Task(task_id="t2", fence_token="f2", request_text="second request")
     active_task.transition_to(TaskStatus.ACTIVE)
     
     stale_result = {
         "task_id": "t1",  # Old task ID
         "fence_token": "f2", 
-        "tool_name": "get_sales",
-        "result": {"sales": 100},
+        "tool_name": "delayed_demo_work",
+        "result": {"message": "done"},
         "error": None
     }
     
@@ -36,14 +36,14 @@ def test_stale_task_id_rejected():
     assert validated["status"] == "rejected_stale"
 
 def test_stale_fence_token_rejected():
-    active_task = Task(task_id="t1", fence_token="new-fence", request_text="sales in q1")
+    active_task = Task(task_id="t1", fence_token="new-fence", request_text="first request")
     active_task.transition_to(TaskStatus.ACTIVE)
     
     stale_result = {
         "task_id": "t1", 
         "fence_token": "old-fence", # Mismatched fence token
-        "tool_name": "get_sales",
-        "result": {"sales": 100},
+        "tool_name": "delayed_demo_work",
+        "result": {"message": "done"},
         "error": None
     }
     
@@ -61,7 +61,7 @@ def test_async_race_condition_simulation():
     """
     # Shared state mock Task Manager
     state = {
-        "active_task": Task(task_id="t-first", fence_token="f-first", request_text="what are sales in Q1?")
+        "active_task": Task(task_id="t-first", fence_token="f-first", request_text="first request")
     }
     state["active_task"].transition_to(TaskStatus.ACTIVE)
     state["active_task"].transition_to(TaskStatus.TOOL_RUNNING)
@@ -69,14 +69,14 @@ def test_async_race_condition_simulation():
     results_received = []
     
     def fake_tool_call(task_id, fence_token):
-        # Inject fixed delay simulating a slow analytics query
+        # Inject fixed delay simulating slow work
         time.sleep(0.1)
         # Tool returns regardless of interruption
         results_received.append({
             "task_id": task_id,
             "fence_token": fence_token,
-            "tool_name": "get_sales",
-            "result": {"sales_q1": 500},
+            "tool_name": "delayed_demo_work",
+            "result": {"message": "done"},
             "error": None
         })
         
@@ -103,14 +103,14 @@ def test_async_race_condition_simulation():
 def test_llm_response_validation_gate():
     from backend.state.fencing import validate_llm_response
     
-    task = Task(task_id="t1", fence_token="f1", request_text="what are sales in Q1?")
+    task = Task(task_id="t1", fence_token="f1", request_text="first request")
     task.transition_to(TaskStatus.ACTIVE)
     task.transition_to(TaskStatus.GENERATING)
     
     llm_response = {
         "task_id": "t1",
         "fence_token": "f1",
-        "response_text": "Sales in Q1 were 500."
+        "response_text": "The first request is complete."
     }
     
     # 1. Happy path: Task is GENERATING, fence tokens match
@@ -126,18 +126,18 @@ def test_llm_response_validation_gate():
     assert validated_stale["status"] == "rejected_stale"
 
     # 3. Race condition: Fence tokens match, but state is somehow invalid
-    task_2 = Task(task_id="t2", fence_token="f2", request_text="sales?")
+    task_2 = Task(task_id="t2", fence_token="f2", request_text="second request")
     task_2.transition_to(TaskStatus.CANCELLED) # Valid fence, but terminal state
     llm_response_2 = {
         "task_id": "t2",
         "fence_token": "f2",
-        "response_text": "Sales were 100."
+        "response_text": "The second request is complete."
     }
     validated_stale_state = validate_llm_response(task_2, llm_response_2)
     assert validated_stale_state["status"] == "rejected_stale"
 
 def test_stale_status_rejected_tool_result():
-    active_task = Task(task_id="t1", fence_token="f1", request_text="sales")
+    active_task = Task(task_id="t1", fence_token="f1", request_text="first request")
     
     # Simulate an edge case where the task is OBSOLETE but the fence token was NOT cleared
     active_task.status = TaskStatus.OBSOLETE
@@ -145,8 +145,8 @@ def test_stale_status_rejected_tool_result():
     stale_result = {
         "task_id": "t1", 
         "fence_token": "f1", # Matches!
-        "tool_name": "get_sales",
-        "result": {"sales": 100},
+        "tool_name": "delayed_demo_work",
+        "result": {"message": "done"},
         "error": None
     }
     

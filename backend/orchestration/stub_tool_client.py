@@ -5,20 +5,17 @@ Stub tool call -- CONTRACTS.md Section 5.
 
 Behaviour (spec-literal):
   - Accepts { task_id, fence_token, tool_name, args }.
-  - Waits a configurable fixed delay (default 3 s) to simulate a slow
-    analytics query.
-  - Returns a hardcoded result with the SAME fence_token it received.
+  - Waits a configurable fixed delay (default 3 s) to simulate delayed work.
+  - Returns a neutral result with the SAME fence_token it received.
     (vedantkhar's fencing layer is responsible for deciding accept/reject;
     this stub never modifies the token.)
   - If cancelled (asyncio.CancelledError) before the delay expires, propagates
     the error. Fencing is the real safety net regardless of cancellation outcome.
 
-Tool registry: the stub supports a small fixed set of tool names that
-match what agent_brain.py will ask for. Each returns deterministic fake data.
+Tool registry: the stub supports one neutral delayed demonstration workload.
 
 Owner: shlok (backend/orchestration/).
-Replace with real moksh module (backend/tools/tool_client.py) once logged
-as DONE in PROGRESS.md.
+This is a demonstration/test workload, not a product data source.
 """
 
 from __future__ import annotations
@@ -30,80 +27,26 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Request / Response shapes -- match CONTRACTS.md Section 4 exactly
-# ---------------------------------------------------------------------------
-
-@dataclass
-class ToolRequest:
-    task_id: str
-    fence_token: str
-    tool_name: str
-    args: dict
+from backend.orchestration.tool_contract import ToolRequest, ToolResponse
 
 
-@dataclass
-class ToolResponse:
-    task_id: str
-    fence_token: str
-    tool_name: str
-    result: Optional[dict]
-    error: Optional[str]
+# Re-export contract types for orchestration callers.
+__all__ = ["ToolRequest", "ToolResponse", "StubToolClient"]
 
 
 # ---------------------------------------------------------------------------
-# Hardcoded stub results (deterministic synthetic sales data)
+# Neutral deterministic result
 # ---------------------------------------------------------------------------
 
 _STUB_RESULTS: dict[str, Any] = {
-    "get_total_sales": {
-        "total_sales_usd": 4_820_500.00,
-        "period": "Q1 2026",
-        "currency": "USD",
-        "_stub": True,
-    },
-    "get_sales_by_region": {
-        "regions": {
-            "North": 1_250_000.00,
-            "South": 980_000.00,
-            "East": 1_430_000.00,
-            "West": 1_160_500.00,
-        },
-        "period": "Q1 2026",
-        "_stub": True,
-    },
-    "get_top_products": {
-        "top_products": [
-            {"product": "DataForge Pro", "units_sold": 3_400, "revenue_usd": 1_700_000},
-            {"product": "Analytics Suite", "units_sold": 2_100, "revenue_usd": 1_050_000},
-            {"product": "ReportBuilder", "units_sold": 1_800, "revenue_usd": 540_000},
-        ],
-        "period": "Q1 2026",
-        "_stub": True,
-    },
-    "get_sales_trend": {
-        "monthly": [
-            {"month": "Jan 2026", "revenue_usd": 1_450_000},
-            {"month": "Feb 2026", "revenue_usd": 1_620_000},
-            {"month": "Mar 2026", "revenue_usd": 1_750_500},
-        ],
-        "_stub": True,
-    },
-    "get_rep_performance": {
-        "reps": [
-            {"name": "Alice Chen", "revenue_usd": 890_000, "deals_closed": 42},
-            {"name": "Bob Mehta", "revenue_usd": 760_000, "deals_closed": 35},
-            {"name": "Carol Santos", "revenue_usd": 1_020_000, "deals_closed": 51},
-        ],
-        "period": "Q1 2026",
-        "_stub": True,
+    "delayed_demo_work": {
+        "message": "Delayed operation completed.",
     },
 }
 
 # Fallback for unknown tools -- still returns something so the pipeline
 # doesn't crash during stub testing.
-_UNKNOWN_TOOL_RESULT = {"message": "stub result for unknown tool", "_stub": True}
+_UNKNOWN_TOOL_RESULT = {"message": "Delayed operation completed."}
 
 
 # ---------------------------------------------------------------------------
@@ -112,9 +55,9 @@ _UNKNOWN_TOOL_RESULT = {"message": "stub result for unknown tool", "_stub": True
 
 class StubToolClient:
     """
-    Stub analytics tool client.
+    Generic delayed demonstration tool client.
 
-    Simulates a slow analytics query with a configurable delay.
+    Simulates delayed work with a configurable delay.
     Correct fence_token passthrough is the responsibility of vedantkhar's
     fencing layer -- this stub echoes whatever token it receives unchanged.
     """
@@ -134,7 +77,7 @@ class StubToolClient:
         """
         Execute a stubbed tool call.
 
-        Waits self.delay_s seconds then returns a hardcoded result.
+        Waits self.delay_s seconds then returns a neutral result.
         Passes through task_id and fence_token unchanged.
         Raises asyncio.CancelledError if cancelled before completion
         (best-effort -- fencing must still be applied regardless).
@@ -144,7 +87,7 @@ class StubToolClient:
 
         Returns:
             ToolResponse with the same task_id and fence_token, plus a
-            hardcoded result dict.  All results carry _stub=True.
+            neutral result dict.
         """
         logger.info(
             "[StubTool] call_tool  tool=%s  task_id=%s  delay=%.1fs",
@@ -167,7 +110,7 @@ class StubToolClient:
             task_id=request.task_id,
             fence_token=request.fence_token,   # echoed unchanged -- vedantkhar checks this
             tool_name=request.tool_name,
-            result=dict(result),               # copy so tests can't mutate _STUB_RESULTS
+            result=dict(result),               # copy so tests can't mutate the result
             error=None,
         )
 
@@ -191,8 +134,8 @@ if __name__ == "__main__":
         req = ToolRequest(
             task_id="task-test-001",
             fence_token="fence-test-abc",
-            tool_name="get_total_sales",
-            args={"period": "Q1 2026"},
+            tool_name="delayed_demo_work",
+            args={},
         )
 
         print("=== Test 1: normal tool call ===")
@@ -200,7 +143,7 @@ if __name__ == "__main__":
         assert resp.task_id == req.task_id
         assert resp.fence_token == req.fence_token   # echoed unchanged
         assert resp.error is None
-        assert resp.result["_stub"] is True
+        assert resp.result["message"] == "Delayed operation completed."
         print(f"PASS: result={resp.result}")
 
         print("\n=== Test 2: cancellation propagates ===")
@@ -208,7 +151,7 @@ if __name__ == "__main__":
         req2 = ToolRequest(
             task_id="task-test-002",
             fence_token="fence-test-def",
-            tool_name="get_sales_by_region",
+            tool_name="delayed_demo_work",
             args={},
         )
         call_task = _asyncio.create_task(client.call_tool(req2))
@@ -220,7 +163,7 @@ if __name__ == "__main__":
         except _asyncio.CancelledError:
             print("PASS: CancelledError propagated as expected")
 
-        print("\n=== Test 3: unknown tool returns stub fallback ===")
+        print("\n=== Test 3: unknown tool returns neutral fallback ===")
         req3 = ToolRequest(
             task_id="task-test-003",
             fence_token="fence-test-ghi",

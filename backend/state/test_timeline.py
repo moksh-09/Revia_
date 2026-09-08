@@ -13,7 +13,7 @@ def test_timeline_emits_all_contract_events():
     # Simulate a full happy path + interruption event flow
     emitter.emit_task_created("t1", "what is this", "2026-09-06T10:00:00Z")
     emitter.emit_task_active("t1")
-    emitter.emit_task_tool_running("t1", "get_sales")
+    emitter.emit_task_tool_running("t1", "delayed_demo_work")
     emitter.emit_task_obsolete("t1", "t2")
     
     emitter.emit_task_created("t2", "actually what is Q2", "2026-09-06T10:01:00Z")

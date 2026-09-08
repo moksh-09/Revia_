@@ -10,7 +10,7 @@ Scenario A -- Interrupt while Rime is speaking.
   is invalidated, a new task takes over and its answer is spoken.
 
 Scenario B -- Interrupt during tool execution.
-  User interrupts (or changes their request) while a background analytics call
+  User interrupts (or changes their request) while a background delayed call
   is still in flight. The stale result must never update state and must never
   be spoken, even if the tool call cannot be physically cancelled.
 
@@ -32,7 +32,8 @@ from typing import Any, Optional
 
 from backend.orchestration.agent_brain import AgentBrain, LLMResponseDraftedEvent
 from backend.orchestration.stub_task_client import StubTaskClient, Task, TaskEvent
-from backend.orchestration.stub_tool_client import StubToolClient, ToolRequest, ToolResponse
+from backend.orchestration.stub_tool_client import StubToolClient
+from backend.orchestration.tool_contract import ToolRequest, ToolResponse
 from backend.orchestration.stub_voice_client import StubVoiceClient, SpeechEvent
 
 logger = logging.getLogger(__name__)
@@ -48,8 +49,8 @@ class ScenarioAwareTaskClient(StubTaskClient):
 
     The base StubTaskClient.check_fence() always returns "accepted"
     (per CONTRACTS.md Section 5 stub spec -- no real fencing logic).
-    This subclass overrides check_fence() to compare the given fence_token
-    against the currently active task's fence_token, simulating exactly
+    This subclass overrides check_fence() to compare the given task_id and
+    fence_token against the currently active task, simulating exactly
     what vedantkhar's real backend/state/fencing.py will do.
 
     Used ONLY inside evaluation/scenarios.py.  The base stub is not modified.
@@ -57,22 +58,31 @@ class ScenarioAwareTaskClient(StubTaskClient):
     swap the real fencing layer in agent_brain.py and delete this class.
     """
 
-    def check_fence(self, fence_token: str) -> str:
+    def check_fence(self, task_id: str, fence_token: str) -> str:
         """
-        Real fence check: reject if fence_token does not match the active task.
+        Real fence check: reject if task_id or fence_token does not match
+        the active task.
 
         Returns "accepted" or "rejected_stale".
         """
         active = self.get_active_task()
-        if active is None or active.fence_token != fence_token:
+        if (
+            active is None
+            or active.task_id != task_id
+            or active.fence_token != fence_token
+        ):
             logger.info(
-                "[ScenarioTaskClient] STALE  fence_token=%s  active_fence=%s",
+                "[ScenarioTaskClient] STALE  task_id=%s fence_token=%s active_task=%s active_fence=%s",
+                task_id,
                 fence_token,
+                active.task_id if active else "None",
                 active.fence_token if active else "None",
             )
             return "rejected_stale"
         logger.debug(
-            "[ScenarioTaskClient] ACCEPTED  fence_token=%s", fence_token
+            "[ScenarioTaskClient] ACCEPTED  task_id=%s fence_token=%s",
+            task_id,
+            fence_token,
         )
         return "accepted"
 
@@ -147,8 +157,8 @@ class ScenarioResult:
 # ---------------------------------------------------------------------------
 
 async def run_scenario_a(
-    request_text: str = "What are the total sales for Q1 2026?",
-    new_request_text: str = "What are sales broken down by region?",
+    request_text: str = "Please run the delayed demonstration workload.",
+    new_request_text: str = "Actually, change that delayed workload.",
     speech_duration_s: float = 4.0,
     tool_delay_s: float = 1.0,
     interrupt_after_speech_s: float = 1.0,
@@ -356,8 +366,8 @@ async def run_scenario_a(
 # ---------------------------------------------------------------------------
 
 async def run_scenario_b(
-    request_text: str = "What are the total sales for Q1 2026?",
-    new_request_text: str = "Actually, show me the top products instead.",
+    request_text: str = "Please run the delayed demonstration workload.",
+    new_request_text: str = "Actually, change that delayed workload.",
     tool_delay_s: float = 5.0,
     interrupt_after_s: float = 2.0,
 ) -> ScenarioResult:
@@ -473,7 +483,7 @@ async def run_scenario_b(
     # The tool will return after tool_delay_s total. By then:
     #   - T1 is OBSOLETE
     #   - Active task is the stub T2 created by interrupt()
-    #   - check_fence(T1.fence_token) vs active(T2.fence_token) -> mismatch
+    #   - check_fence(T1.task_id, T1.fence_token) vs active T2 -> mismatch
     #   - brain.run() returns aborted=True, abort_reason="stale_result_rejected"
     result_t1 = await t1_run
     result.t1_run_result = result_t1

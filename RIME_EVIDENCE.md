@@ -1,94 +1,96 @@
-# RIME_EVIDENCE.md
+# REVIA — Rime / Hard-Voice Evidence
 
-Updated incrementally as each piece becomes true and provable — see
-`MASTER_README.md` Section 7. No fabricated or estimated results.
+This document distinguishes implementation and deterministic evidence from
+actual LiveKit runtime evidence. Tests and source inspection are not treated as
+live proof.
 
-## 1. Hard Voice Claim
+## Hard voice claim
 
-REVIA remains conversationally correct — never speaking or acting on a stale
-or wrong result — when the user interrupts it while it is speaking
-(Scenario A) or while a background tool/data operation is still running
-(Scenario B). Both are solved by one mechanism: task IDs + fencing +
-stale-result rejection.
+REVIA reliably switches conversational task authority during full-duplex voice
+interaction: interruptions stop obsolete speech, obsolete model/tool work
+cannot re-enter the active conversational state, and the updated request
+becomes authoritative without losing valid session context.
 
-## 2. Why Voice Is Necessary
+The claim is one problem: Reliable Full-Duplex Task Switching, demonstrated
+through interruption/recovery and conversation continuity during tool work.
 
-The failure mode under test — interruption, mid-sentence correction, changing
-your mind mid-request — only exists in a live, spoken, interruptible
-conversation. A typed message is already final the instant it is sent, so
-there is nothing mid-flight to interrupt and no stale result to reject.
-Removing voice removes the problem this project exists to solve, not just
-the interface it's delivered through.
+## Acceptance test
 
-## 3. Rime Configuration
+The PS-style fixed-delay scenario is:
 
-```
-MODEL:        coda        (Rime's current flagship model; Arcana sunset 2026-08-15)
-VOICE:        lyra
-LANGUAGE:     eng
-ENDPOINT:     wss://users-ws.rime.ai/ws3
-AUDIO_FORMAT: pcm, sample_rate=16000
-TRANSPORT:    LiveKit Agents, `livekit.plugins.rime.TTS(model="coda", speaker="lyra", use_websocket=True)`
-```
+1. Start Task A from a real voice request.
+2. Make Tool A enter a fixed delayed running state.
+3. Interrupt or refine one part of the request while A is running or speaking.
+4. Stop obsolete Rime speech promptly.
+5. Make Task A obsolete.
+6. Create Task B as the new authority.
+7. Allow Tool A to finish late if necessary.
+8. Reject the stale A result using both task ID and fence token.
+9. Ensure A cannot generate, commit, or queue stale Rime speech.
+10. Ensure Task B reaches Rime and reflects the updated request.
 
-These six values must always match `CONTRACTS.md` Section 7 and
-`.env.example` exactly — update all three together, never one at a time.
+## Result and evidence level
 
-## 4. Acceptance Test
+The implementation and deterministic tests cover task/fence validation,
+overlapping delayed work, stale-result rejection, context ordering, speech
+authority, and session teardown protection.
 
-**Scenario A — Interrupt while speaking**
-<TODO: fill after Scenario A is built and run — exact steps, e.g. T001
-created, Rime begins speaking, user interrupts at Xs, verify old speech
-stops, T001 -> OBSOLETE, T002 created and active, T002 answer spoken.>
+Evidence classification:
 
-**Scenario B — Interrupt during tool execution**
-<TODO: fill after Scenario B is built and run — T001 created, tool call
-delayed N seconds, user interrupts mid-delay, T001 -> OBSOLETE, T002 active,
-T001's late tool result rejected via fence_token mismatch and never spoken,
-T002's answer generated and spoken.>
+- Task/fence and stale-result behavior: INTEGRATION TESTED.
+- Delayed-tool overlap and task switching: INTEGRATION TESTED.
+- Rime playback and interruption observations on the Windows runtime:
+  LIVE TESTED.
+- Complete single live trace proving A tool-running → refinement → A obsolete
+  → B authoritative → late A rejection → no stale Rime speech → B spoken:
+  NOT VERIFIED LIVE.
 
-## 5. Test Setup
+Deterministic tests must not be presented as live proof.
 
-<TODO: environment, fixed delay values used, how reproducibility is ensured.>
+## Current Rime configuration
 
-## 6. Procedure
+The exact configuration in backend/rime/tts_rime.py is:
 
-<TODO: exact reproducible steps or script/command to run each scenario.>
+    model:         coda
+    speaker/voice: lyra
+    language:      eng
+    endpoint:      wss://users-ws.rime.ai/ws3
+    audio format:  pcm
+    sample rate:   16000 Hz
+    transport:     LiveKit Agents AgentSession.say()
+    websocket:     enabled
 
-## 7. Results
+Rime is the primary spoken output. queue_rime_speech() calls
+AgentSession.say() with interruptions enabled. New user speech interrupts the
+active Rime playback through RimePlaybackController and emits speech lifecycle
+events.
 
-<TODO: real observed output only — timestamps, event timeline excerpts,
-PASS/FAIL per checklist item below. Never estimate.>
+If the AgentSession is already closed or closes at the speech boundary, speech
+is skipped. The known LiveKit lifecycle errors are contained narrowly; other
+runtime errors propagate. This protects teardown but does not prove the full
+live acceptance sequence.
 
-**PASS checklist (per scenario):**
-- [ ] old task invalidated
-- [ ] old speech stopped if speaking
-- [ ] new task created
-- [ ] new task becomes active
-- [ ] stale result rejected
-- [ ] stale result not spoken
-- [ ] active state not overwritten
-- [ ] final answer matches latest request
-- [ ] events recorded in timeline
-- [ ] measurable evidence captured (logs/metrics attached)
+## Reproducibility
 
-## 8. Stress Case
+From the project root, using the existing project environment:
 
-<TODO: describe the deliberate failure case demonstrated in the recorded demo.>
+    cd D:\revia
+    python backend\voice_io\agent.py dev
 
-## 9. Evidence / Artifacts
+Deterministic tests:
 
-<TODO: links or paths to logs, timeline exports, recorded clips, metrics
-snapshots — committed to the repo, not just described.>
+    python -m pytest backend\state -q
+    python -m pytest backend\evaluation\test_backend_e2e.py -q
 
-## 10. Limitations
+Required environment variable names are read from .env; credentials are not
+included in source, client code, or this document.
 
-<TODO: log honestly and immediately as discovered — e.g. specific tool types
-where cancellation isn't supported (fencing still applies as the safety net),
-any input types not yet handled, any fallback TTS path and when it triggers.>
+## Limitations
 
-## 11. Reproduction Command / Script
-
-```
-<TODO: exact command, e.g. `python evaluation/run_scenario.py --scenario A`>
-```
+- Context is same-session only; permanent and cross-session memory are not
+  implemented.
+- The delayed tool is neutral demonstration scaffolding, not a production
+  data source.
+- The complete delayed-tool full-duplex acceptance trace remains NOT VERIFIED
+  LIVE and must not be claimed as proven without a preserved LiveKit event
+  timeline and corresponding audible Task B result.

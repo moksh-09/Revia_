@@ -60,4 +60,45 @@ Use your real name exactly as it appears in `MASTER_README.md` Section 10:
 [2026-09-07 13:05] [shlok] [Code quality Fix 5 — requirements.txt pinning] DONE — pinned groq==1.7.0 and python-dotenv==1.2.3 (the two packages installed in this env); added NOTE comments for packages belonging to other owners. [STUB TEST]
 [2026-09-07 13:05] [shlok] [Code quality Fix 6 — inline imports] DONE — moved TaskEvent/SpeechEvent imports from inside _render_scenario_block() to top of evidence_generator.py. python -m backend.evaluation.evidence_generator: OVERALL PASS. [STUB TEST]
 [2026-09-07 13:05] [shlok] [Code quality Fix 7 — GROQ_MODEL env var] DONE — hardcoded "openai/gpt-oss-20b" removed from agent_brain.py; now reads os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"); GROQ_MODEL added to .env and .env.example. python -m backend.orchestration.agent_brain: PASS, model=openai/gpt-oss-20b. [STUB TEST]
+[2026-09-07 00:43] [vedantkhar] [State + Fencing - full module] DONE - task.py, interruption.py, fencing.py, timeline.py all built and verified against CONTRACTS.md Sections 1-2 field-for-field. 19/19 tests passing (pytest backend/state -v). Covers: task_id + fence_token per task, interrupt invalidates old task and creates new ACTIVE task, fence check rejects stale tool.result AND stale llm.response_drafted independent of task status, all 9 required events emitted with correct payloads (task.created/active/tool_running/generating/speaking/completed/cancelled/obsolete/failed). Branch: vedantkhar, commit b6ad3af.
+[2026-09-07] [vedantkhar] [TaskManager wrapper] DONE - task_manager.py enhanced with complete lifecycle state transitions (start_tool_running, start_generating, start_speaking, cancel_active_task, fail_task, get_task), parent lineage tracking across interruptions, and robust state machine enforcement. Verified via pytest backend/state.
+[2026-09-08 00:43] [All] [Final Backend Integration & 12-Test Hard Voice Problem Verification] DONE — Full end-to-end integration verified. 32/32 tests passing (py -m pytest -v). Includes TEST 01 (General Conversation), TEST 02 (Multi-turn Context Memory), TEST 03 (Analytics Tool Calling), TEST 04 (Interrupt during Rime Speech), TEST 05 (Interrupt during Tool Execution), TEST 06 (Change Request during Tool Work), TEST 07 (Multiple Interruptions), TEST 08 (Status during Tool Work), TEST 09 (Cancellation), TEST 10 (Context Preserved after Cancellation/Refinement), TEST 11 (Switch Analytics to Conversation), and TEST 12 (Late Stale Result Rejection). Real Rime TTS synthesis verified on Coda/Lyra wss://users-ws.rime.ai/ws3 PCM 16000Hz (frames=22, bytes=44960).
+
+[2026-09-08] [All] [Analytics removal] Sales analytics and the synthetic sales dataset are historical scaffolding and are no longer part of the current product/runtime. The retained delayed workload is neutral demonstration/test infrastructure for full-duplex task switching.
 ```
+
+## Final documentation correction — 2026-09-08
+
+[2026-09-08] [All] [Final evidence audit] STATUS — The implementation and deterministic stabilization work are substantially complete. The accepted evidence includes local Windows startup/worker registration, Deepgram transcript reception, Rime playback and interruption observations, task/fence regression coverage, context continuity coverage, 15 deterministic evaluation regressions, and 20 backend state tests.
+
+[2026-09-08] [All] [Final evidence audit] LIMITATION — The complete real delayed-tool full-duplex trace is NOT VERIFIED LIVE. No repository/live artifact currently proves the entire sequence in one run: Task A TOOL_RUNNING, refinement while Tool A remains active, Task A invalidation, Task B authority, late Tool A completion, stale rejection, no stale Rime speech, and refined Task B speech.
+
+[2026-09-08] [All] [Final evidence audit] CORRECTION — The earlier “32/32” entry describes an earlier test record and must not be used as proof of the current live acceptance scenario. Stub/deterministic results are not live proof. Current code uses Deepgram Nova-3, and conversation history is no longer limited to six messages.
+
+[2026-09-08] [All] [Current overall status] — Backend implementation is locally runnable and substantially stabilized; the remaining acceptance blocker is preservation of one complete real LiveKit delayed-tool/refinement event trace.
+
+## Current PS-aligned status — 2026-09-08
+
+The entries above preserve project history, including the removed sales
+scaffolding. The current product/runtime is a general conversational voice
+agent focused on Reliable Full-Duplex Task Switching.
+
+- **IMPLEMENTED** — LiveKit worker entrypoint, Deepgram STT, Groq general
+  reasoning, same-session context, TaskManager lifecycle, task IDs, fence
+  tokens, Rime playback, interruption handling, and session teardown guards.
+- **IMPLEMENTED** — neutral delayed_demo_work workload carrying task ID and
+  fence provenance; sales analytics and the synthetic sales dataset removed.
+- **TESTED** — task/fence validation, stale-result rejection, immutable fence
+  provenance, stale response rejection, context ordering, Rime speech authority,
+  and teardown error handling.
+- **INTEGRATION TESTED** — deterministic overlapping delayed-tool execution in
+  which Task A becomes obsolete, its late result is rejected, and Task B remains
+  the valid conversational result.
+- **LIVE TESTED** — local Windows worker registration, Deepgram transcript
+  reception, basic Groq responses, Rime playback, and interruption of Rime
+  speech.
+- **NOT VERIFIED LIVE** — one complete preserved LiveKit trace proving Task A
+  tool-running, refinement while A is still active, A invalidation, B authority,
+  late A rejection, no stale Rime output, and B spoken.
+- **LIMITATION** — context is same-session only; tool cancellation is best
+  effort and is not the stale-result correctness mechanism.
