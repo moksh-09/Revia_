@@ -17,27 +17,57 @@ RIME_ENDPOINT = f"{RIME_BASE_URL}/ws3"
 RIME_AUDIO_FORMAT = "pcm"
 RIME_SAMPLE_RATE = 16000
 
+# Persona -> (speaker, model) mapping.
+# Only these two combinations are verified to work with Rime.
+# Language is controlled exclusively via the `lang=` parameter; we do NOT
+# swap to unverified speaker names for different languages, as that causes
+# Rime to hallucinate or return broken audio.
+PERSONA_VOICE: dict[str, tuple[str, str]] = {
+    "signature": ("lyra",  "coda"),
+    "concierge": ("cove",  "mistv2"),
+}
 
-def create_rime_tts() -> rime.TTS:
-    """Create Rime TTS with REVIA's frozen configuration."""
+
+
+def create_rime_tts(
+    model: str = RIME_MODEL,
+    speaker: str = RIME_VOICE,
+    lang: str = RIME_LANGUAGE,
+    sample_rate: int = RIME_SAMPLE_RATE,
+    speed_alpha: float = 1.0,
+) -> rime.TTS:
+    """Create Rime TTS with REVIA's voice identity and audio profile configuration.
+
+    Language switching is done via the `lang=` parameter only.
+    We keep the same verified speaker (lyra/coda or cove/mistv2) regardless of
+    language — swapping to unverified speaker names causes Rime to hallucinate.
+    """
     if not os.getenv("RIME_API_KEY"):
         raise RuntimeError("RIME_API_KEY is required in .env")
 
-    return rime.TTS(
-        base_url=RIME_BASE_URL,
-        model=RIME_MODEL,
-        speaker=RIME_VOICE,
-        lang=RIME_LANGUAGE,
-        sample_rate=RIME_SAMPLE_RATE,
-        use_websocket=True,
-    )
+    kwargs = {
+        "base_url": RIME_BASE_URL,
+        "model": model,
+        "speaker": speaker,
+        "lang": lang,
+        "sample_rate": sample_rate,
+        "use_websocket": True,
+    }
+    if speed_alpha != 1.0:
+        kwargs["speed_alpha"] = speed_alpha
+
+    return rime.TTS(**kwargs)
 
 
 def queue_rime_speech(session: AgentSession, text: str):
-    """Queue Rime-generated speech for playback in the active LiveKit room."""
+    """Queue Rime-generated speech for playback in the active LiveKit room.
+    
+    allow_interruptions=True lets LiveKit's own VAD stop playback as soon as
+    the user starts speaking, eliminating the 1-2 s overlap window.
+    """
     return session.say(
         text,
-        allow_interruptions=False,
+        allow_interruptions=True,
         add_to_chat_ctx=False,
     )
 

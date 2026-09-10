@@ -96,7 +96,15 @@ class RimePlaybackController:
             "detected_at": utc_timestamp(),
         }
 
-        handle.interrupt(force=True)
+        try:
+            handle.interrupt(force=True)
+        except Exception:
+            pass
+
+        # Cancel internal generation/audio forwarding tasks immediately
+        for task in getattr(handle, "_tasks", []):
+            if not task.done():
+                task.cancel()
 
         stopped_event = {
             "event": "speech.stopped",

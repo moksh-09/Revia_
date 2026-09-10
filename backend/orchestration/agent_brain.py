@@ -115,21 +115,19 @@ _TOOL_DEFINITIONS = [
 ]
 
 _SYSTEM_PROMPT = """\
-You are REVIA, a general conversational voice assistant focused on reliable
+You are REVIA, a voice-native conversational intelligence focused on reliable
 full-duplex task switching. You can answer general knowledge questions and
 converse naturally and thoughtfully on any topic.
 
-Always respond in natural, spoken conversational English (no markdown, no bullet
-lists, no asterisks -- answers must sound completely natural when read aloud by
-a text-to-speech system).
-
-Guidelines:
-1. For general conversation, questions, explanations, or assistance, answer
-   directly, intelligently, and helpfully.
-2. Use the optional delayed demonstration tool only when the user explicitly asks
-   for that demonstration workload.
-3. Keep spoken answers concise and conversational -- typically 2 to 4 sentences.
-4. Keep the conversation honest about what tools and information are available.
+Delivery & "Writing for the Ear" Guidelines:
+1. Write for the ear, not the eye: Use natural spoken contractions ("it's", "that's", "you'll", "don't").
+2. Short breath groups: Keep sentences short, rhythmic, and easy to speak (under 15 words per clause).
+3. Spoken rhythm & punctuation: Use commas and periods to pace natural breathing pauses. Avoid semicolons, parentheses, dashes, or brackets.
+4. Natural transitions: Sound organic and human with conversational connectors ("Well,", "Sure thing,", "Alright,").
+5. Strictly no formatting: Never output markdown, asterisks, bullet points, numbers as lists, emojis, or code blocks.
+6. Keep spoken answers concise: Deliver 2 to 4 punchy, natural sentences unless more detail is explicitly requested.
+7. Use the optional delayed demonstration tool only when the user explicitly asks for that demonstration workload.
+8. Keep the conversation honest about what tools and information are available.
 """
 
 
@@ -198,6 +196,8 @@ class AgentBrain:
             self._tool_client = tool_client or StubToolClient(delay_s=0)
         self._voice_client: Any = voice_client or StubVoiceClient()
 
+        self._persona: str = "signature"
+        self._language: str = "eng"
         self._conversation_history: list[dict[str, str]] = []
         self._conversation_turns: dict[int, dict[str, Optional[str]]] = {}
         self._next_turn_sequence = 0
@@ -207,6 +207,70 @@ class AgentBrain:
         # Wire sub-client events into our unified log
         self._task_client.on_event(self._record_event)
         self._voice_client.on_event(self._record_event)
+
+    def set_persona(self, persona: str) -> None:
+        """Update persona preset (signature, concierge, dispatcher, copilot)."""
+        self._persona = persona.lower().strip()
+
+    def set_language(self, language: str) -> None:
+        """Update language preference (eng, spa, fra, ger, hin, auto)."""
+        self._language = language.lower().strip()
+
+    def _get_system_prompt(self) -> str:
+        prompt = _SYSTEM_PROMPT
+
+        if self._persona == "concierge":
+            prompt += (
+                "\nActive Persona: Empathetic Concierge. Speak with warm, reassuring, patient, and polite phrasing. "
+                "Prioritize comfort and gentle clarity."
+            )
+        elif self._persona == "dispatcher":
+            prompt += (
+                "\nActive Persona: Telephony Dispatcher. Speak with crisp, concise, high-efficiency phrasing. "
+                "Confirm details immediately and maintain swift call handling etiquette."
+            )
+        elif self._persona == "copilot":
+            prompt += (
+                "\nActive Persona: Technical Co-Pilot. Provide sharp, technically accurate answers with zero filler. "
+                "Prioritize actionable logic and direct technical truth."
+            )
+
+        if self._language in ("eng", "en"):
+            prompt += (
+                "\nSTRICT LANGUAGE ENFORCEMENT: English.\n"
+                "You MUST respond exclusively in natural, fluent spoken English.\n"
+                "Even if previous conversation turns, context, or user inputs were in Hindi, Spanish, French, or German, "
+                "switch completely, immediately, and unconditionally back to English. Do not output foreign or mixed-language words."
+            )
+        elif self._language in ("hin", "hi"):
+            prompt += (
+                "\nSTRICT LANGUAGE ENFORCEMENT: Hindi (हिंदी / Hinglish as natural for voice).\n"
+                "You MUST respond in natural, polite spoken Hindi. "
+                "Keep sentences clean, natural, and easy to understand for speech synthesis. Do not output English sentences unless technical terms."
+            )
+        elif self._language in ("spa", "es"):
+            prompt += (
+                "\nSTRICT LANGUAGE ENFORCEMENT: Spanish (Español).\n"
+                "You MUST respond exclusively in natural, conversational spoken Spanish. Maintain spoken contractions and rhythm."
+            )
+        elif self._language in ("fra", "fr"):
+            prompt += (
+                "\nSTRICT LANGUAGE ENFORCEMENT: French (Français).\n"
+                "You MUST respond exclusively in natural, conversational spoken French. Maintain spoken contractions and rhythm."
+            )
+        elif self._language in ("ger", "de"):
+            prompt += (
+                "\nSTRICT LANGUAGE ENFORCEMENT: German (Deutsch).\n"
+                "You MUST respond exclusively in natural, conversational spoken German. Maintain clear, spoken rhythm."
+            )
+        elif self._language == "auto":
+            prompt += (
+                "\nLANGUAGE DIRECTIVE: Dynamic Multilingual.\n"
+                "Automatically detect the user's spoken language and respond fluently in that exact same language. "
+                "If the user switches languages, switch your response language immediately and completely."
+            )
+
+        return prompt
 
     # ------------------------------------------------------------------
     # Public API
@@ -789,7 +853,7 @@ class AgentBrain:
 
         Returns (tool_name, args) or (None, None) if no tool is needed.
         """
-        messages = [{"role": "system", "content": _SYSTEM_PROMPT}]
+        messages = [{"role": "system", "content": self._get_system_prompt()}]
         # Include the complete valid session context in input order.
         history = (
             self._history_before_turn(turn_sequence)
@@ -855,7 +919,7 @@ class AgentBrain:
         else:
             user_message = request_text
 
-        messages = [{"role": "system", "content": _SYSTEM_PROMPT}]
+        messages = [{"role": "system", "content": self._get_system_prompt()}]
         history = (
             self._history_before_turn(turn_sequence)
             if turn_sequence is not None
@@ -869,7 +933,7 @@ class AgentBrain:
             response = await self._groq.chat.completions.create(
                 model=self._model,
                 messages=messages,
-                max_tokens=256,
+                max_tokens=1024,
                 temperature=0.3,
             )
             content = response.choices[0].message.content
@@ -882,15 +946,14 @@ class AgentBrain:
                         {
                             "role": "system",
                             "content": (
-                                "You are REVIA, a friendly and intelligent voice AI. "
-                                "Answer the user's question directly in natural, spoken English. "
+                                f"{self._get_system_prompt()}\n"
                                 "Do not output JSON, tool calls, or markdown formatting."
                             ),
                         },
                         *history,
                         {"role": "user", "content": user_message},
                     ],
-                    max_tokens=256,
+                    max_tokens=1024,
                     temperature=0.3,
                 )
                 content = retry_response.choices[0].message.content

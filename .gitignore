@@ -7,3 +7,13 @@ node_modules/
 backend/state/venv/
 __pycache__/
 *.pyc
+
+# Local environment files
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+
+# Frontend build output
+frontend/dist/
