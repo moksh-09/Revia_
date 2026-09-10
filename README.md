@@ -1,119 +1,238 @@
-REVIA
+# ◈ REVIA — Full-Duplex Voice Intelligence System
 
-## Realtime Voice Intelligence with Reliable Full-Duplex Task Switching
 
-REVIA is a realtime, voice-native conversational assistant designed for conversations where users interrupt, refine, or change their requests while the system is still speaking or working.
 
-### Core idea
+# ◈ Overview
 
-> **REVIA is interruptible by design and correct by construction.**
+**REVIA** is a realtime voice-native conversational system designed for situations where a user does not wait for an assistant to finish.
 
-The central problem is **reliable full-duplex task switching**:
+A conventional assistant can be modeled as:
 
-> When a user interrupts REVIA while it is speaking or while an asynchronous operation is still running, how can the system guarantee that an outdated request does not later become the response the user hears?
+```text
+User speaks
+    ↓
+System thinks
+    ↓
+System responds
+    ↓
+Turn ends
+```
 
-REVIA addresses this with **task-aware interruption recovery and stale-result protection**.
+REVIA instead treats conversation as a concurrent, interruptible process:
 
-Every user request receives a unique `task_id` and `fence_token`. Only the currently authoritative task may update conversation state or produce spoken output. When a user interrupts or changes their request, the previous task loses authority. If an older asynchronous operation finishes later, its result is checked against the current task/fence and rejected when stale.
+```text
+User speaks
+    ↓
+REVIA processes
+    ↓
+REVIA works / thinks / speaks
+    ↓
+User speaks again
+    ↓
+Current request changes
+    ↓
+Previous task loses authority
+    ↓
+New task becomes authoritative
+    ↓
+Only the current valid result can be spoken
+```
 
-Cancellation is helpful when available; **fencing is the correctness guarantee**.
+The central design principle is:
+
+> **Cancellation is helpful, but fencing is the correctness guarantee.**
+
+If an old asynchronous operation cannot be physically cancelled, REVIA still prevents its late result from taking control of the conversation.
 
 ---
 
-# 1. What REVIA Demonstrates
+# ◈ The Hard Voice Problem
 
-REVIA focuses on one hard voice problem and demonstrates it through two related stress cases.
+## Problem Statement
 
-## Scenario A — Interrupt While Speaking
+> **How does a realtime voice agent remain conversationally correct when the user interrupts it while it is speaking, generating an answer, or waiting for asynchronous work?**
 
-REVIA begins speaking a response through Rime.
+This is harder than ordinary request/response chat because multiple operations can be alive simultaneously.
 
-The user starts speaking before the response finishes.
-
-Expected behavior:
-
-```text
-REVIA SPEAKING
-      ↓
-USER INTERRUPTS
-      ↓
-OLD SPEECH STOPS
-      ↓
-OLD TASK BECOMES OBSOLETE
-      ↓
-NEW TASK BECOMES ACTIVE
-      ↓
-NEW REQUEST IS PROCESSED
-      ↓
-NEW RESPONSE IS SPOKEN
-```
-
-The previous response must not resume as the current answer.
-
-## Scenario B — Interrupt During Tool Execution
-
-REVIA starts a request that invokes an asynchronous delayed demonstration workload.
-
-Before the workload finishes, the user changes the request.
-
-Expected behavior:
+For example:
 
 ```text
 Task A
-  ↓
-TOOL_RUNNING
-  ↓
-USER CHANGES REQUEST
-  ↓
-Task A → OBSOLETE / REPLACED
-  ↓
-Task B → ACTIVE
-  ↓
-Task A FINISHES LATE
-  ↓
-FENCE VALIDATION
-  ↓
-TASK A RESULT REJECTED
-  ↓
-TASK A RESULT IS NOT SPOKEN
-  ↓
-TASK B REMAINS AUTHORITATIVE
-  ↓
-RIME SPEAKS TASK B
+  └── tool is running
+
+User interrupts
+
+Task B
+  └── new request becomes active
+
+Task A finishes late
 ```
 
-The delayed workload is test/demo infrastructure. It is not presented as the product itself.
+Without explicit task authority, Task A can accidentally:
+
+- update the current conversation;
+- overwrite a newer response;
+- produce stale speech;
+- continue after the user has changed their request;
+- confuse the user by answering an obsolete question.
+
+REVIA prevents this through **task identity + fence validation + controlled speech delivery**.
 
 ---
 
-# 2. Why Voice Is Necessary
+# ◈ What Makes REVIA Different
 
-The failure mode REVIA addresses is fundamentally a voice interaction problem.
+### 1. Full-duplex interaction
 
-In a typed chat interface, a message is generally complete once it is submitted. In a realtime voice conversation, the user can begin speaking while the assistant is still producing an answer.
+REVIA is designed for voice interaction where the user can speak while the assistant is speaking or working.
 
-That creates states that must be handled concurrently:
+### 2. Task-aware interruption
 
-- the assistant is speaking;
-- the user starts another utterance;
-- an older tool may still be running;
-- an older model request may finish later;
-- the newest request must take authority;
-- stale output must not reach the user.
+Every request becomes an explicit task rather than an anonymous conversational turn.
 
-REVIA treats interruption as a first-class control path rather than as a normal sequential pipeline stage.
+### 3. Authoritative current task
+
+The system maintains one authoritative active task for the current interaction.
+
+### 4. Stale-result rejection
+
+A result produced by an obsolete task is not allowed to become current merely because it completed later.
+
+### 5. Controlled Rime delivery
+
+Even after response generation, REVIA validates task/session authority before queueing speech.
+
+### 6. Conversation continuity
+
+Replacing an execution task does not automatically erase valid previous conversational context.
+
+### 7. Frontend reflects backend authority
+
+The browser visualizes task and voice state; it does not independently implement task correctness.
 
 ---
 
-# 3. Core Correctness Model
+# ◈ Core Runtime Architecture
 
-Each request is associated with:
+```text
+                         ┌──────────────────────┐
+                         │        USER          │
+                         │ Microphone / Speech  │
+                         └──────────┬───────────┘
+                                    │
+                                    ▼
+                         ┌──────────────────────┐
+                         │       LiveKit        │
+                         │ Realtime WebRTC Room │
+                         └──────────┬───────────┘
+                                    │
+                                    ▼
+                         ┌──────────────────────┐
+                         │    REVIA Agent       │
+                         │ backend/voice_io     │
+                         └──────────┬───────────┘
+                                    │
+                         ┌──────────▼──────────┐
+                         │     Deepgram STT    │
+                         └──────────┬──────────┘
+                                    │
+                                    ▼
+                         ┌──────────────────────┐
+                         │   Session Context    │
+                         │   + TaskManager      │
+                         └──────────┬───────────┘
+                                    │
+                                    ▼
+                         ┌──────────────────────┐
+                         │    AgentBrain        │
+                         │  LLM orchestration   │
+                         └──────────┬───────────┘
+                                    │
+                         ┌──────────▼──────────┐
+                         │ Optional delayed    │
+                         │ demonstration work  │
+                         └──────────┬──────────┘
+                                    │
+                                    ▼
+                         ┌──────────────────────┐
+                         │  Fence Validation    │
+                         │ Is task still valid? │
+                         └───────┬───────┬──────┘
+                                 │       │
+                               YES       NO
+                                 │       │
+                                 ▼       ▼
+                         ┌──────────┐  ┌──────────────┐
+                         │ Response │  │ Stale result │
+                         │ delivery │  │ rejected     │
+                         └────┬─────┘  └──────────────┘
+                              │
+                              ▼
+                         ┌──────────┐
+                         │ Rime TTS │
+                         └────┬─────┘
+                              │
+                              ▼
+                         ┌──────────┐
+                         │ LiveKit  │
+                         │ Playback │
+                         └────┬─────┘
+                              │
+                              ▼
+                             USER
+```
 
-- `task_id`
-- `fence_token`
-- task lifecycle state
+The browser connects to the same LiveKit session used by the REVIA agent. The frontend does not create a second STT/TTS pipeline.
 
-The task lifecycle includes:
+---
+
+# ◈ Voice Pipeline
+
+The current end-to-end runtime path is:
+
+```text
+Microphone
+    ↓
+LiveKit AgentSession
+    ↓
+Deepgram STT
+    ↓
+REVIA Voice Agent
+    ↓
+AgentBrain / Session Context
+    ↓
+TaskManager
+    ↓
+Configured LLM provider
+    ↓
+Optional delayed_demo_work
+    ↓
+Task + Fence Validation
+    ↓
+Response Generation
+    ↓
+Rime TTS
+    ↓
+LiveKit Audio Playback
+    ↓
+Browser
+```
+
+Final transcripts are processed asynchronously so that a delayed workload does not prevent later LiveKit turns from being received.
+
+---
+
+# ◈ Task Authority and Fencing
+
+Every user turn creates a task containing:
+
+```text
+task_id
+fence_token
+task status
+```
+
+The task lifecycle is:
 
 ```text
 CREATED
@@ -129,7 +248,7 @@ SPEAKING
 COMPLETED
 ```
 
-Terminal/replacement states include:
+Tasks may instead become:
 
 ```text
 CANCELLED
@@ -137,23 +256,40 @@ OBSOLETE
 FAILED
 ```
 
-When a new request supersedes an existing task:
+## Authority transition
+
+Suppose Task A is active:
 
 ```text
-OLD TASK
-   ↓
-OBSOLETE / CANCELLED
-   ↓
-FENCE INVALIDATED
-
-NEW TASK
-   ↓
+Task A
 ACTIVE
 ```
 
-Asynchronous results retain the identity of the task that produced them.
+The user changes the request:
 
-Before a result can affect current conversation state or proceed to spoken output, REVIA validates that its task/fence is still authoritative.
+```text
+Task A
+OBSOLETE
+   │
+   └── fence invalidated
+
+Task B
+ACTIVE
+```
+
+Task B is now authoritative.
+
+If Task A later returns:
+
+```text
+Task A result
+     ↓
+Fence validation
+     ↓
+Task A is obsolete
+     ↓
+REJECT
+```
 
 Therefore:
 
@@ -161,417 +297,529 @@ Therefore:
 Late result ≠ valid result
 ```
 
-Even when arbitrary background work cannot be physically cancelled, its stale result can still be prevented from becoming the current response.
+The stale result cannot become current speech.
 
 ---
 
-# 4. Architecture
+# ◈ Interruption Handling
+
+When new user speech is detected while REVIA is speaking:
 
 ```text
-                         REVIA
-                           │
-                           ▼
-                  Browser Microphone
-                           │
-                           ▼
-                LiveKit Realtime Transport
-                           │
-                           ▼
-                   REVIA Voice Agent
-                           │
-              ┌────────────┴────────────┐
-              │                         │
-              ▼                         ▼
-        Deepgram STT             Session / Context
-                                        │
-                                        ▼
-                                 Task Manager
-                                        │
-                         ┌──────────────┴──────────────┐
-                         │                             │
-                         ▼                             ▼
-                 Interruption                  Task / Fence
-                   Handling                    Validation
-                         │                             │
-                         └──────────────┬──────────────┘
-                                        ▼
-                              LLM / Orchestration
-                                        │
-                              ┌─────────┴─────────┐
-                              │                   │
-                              ▼                   ▼
-                           Gemini                Groq
-                         / primary            / fallback
-                              │                   │
-                              └─────────┬─────────┘
-                                        ▼
-                              Optional Delayed Work
-                                        │
-                                        ▼
-                              Response Validation
-                                        │
-                                        ▼
-                                   Rime TTS
-                                        │
-                                        ▼
-                              LiveKit Audio Playback
-                                        │
-                                        ▼
-                                      USER
+USER SPEAKS
+     ↓
+LiveKit detects user speech
+     ↓
+Active Rime playback interrupted
+     ↓
+Current task becomes obsolete
+     ↓
+Fence authority invalidated
+     ↓
+Final transcript arrives
+     ↓
+New task created
+     ↓
+New task becomes ACTIVE
+     ↓
+New response generated
+     ↓
+Rime speaks only the new valid response
 ```
 
-The application also emits task/voice events used by the evaluation and reliability UI.
+The backend therefore treats interruption as an authority transition, not merely an audio-volume event.
+
+The agent also checks session liveness before queuing speech so that responses are not submitted to a closed/closing `AgentSession`.
 
 ---
 
-# 5. Runtime Flow
-
-The realtime path is:
+# ◈ Demonstration Scenario A — Interrupt While Speaking
 
 ```text
-Microphone
-    ↓
-LiveKit
-    ↓
-Deepgram STT
-    ↓
-REVIA Voice Agent
-    ↓
-Task / Conversation State
-    ↓
-LLM Orchestration
-    ↓
-Optional asynchronous workload
-    ↓
-Task + Fence Validation
-    ↓
-Response
-    ↓
-Rime TTS
-    ↓
-LiveKit Audio
-    ↓
-Browser
+Task A
+  ↓
+REVIA SPEAKING
+  ↓
+USER INTERRUPTS
+  ↓
+Rime playback stops
+  ↓
+Task A → OBSOLETE / REPLACED
+  ↓
+Task B → ACTIVE
+  ↓
+Task B response generated
+  ↓
+Rime speaks Task B
 ```
 
-Interruption is not treated as a normal sequential stage. It can preempt the flow while the agent is:
+### Expected result
 
-- working on a tool;
-- generating a response;
-- speaking through Rime.
+The old response must not resume or continue as the authoritative response after the user has redirected the conversation.
 
 ---
 
-# 6. Technology Stack
+# ◈ Demonstration Scenario B — Interrupt During Async Work
 
-| Layer | Technology |
-|---|---|
-| Frontend | React + TypeScript |
-| Frontend build | Vite |
-| Browser realtime client | `livekit-client` |
-| Realtime transport | LiveKit |
-| Voice agent runtime | LiveKit Agents |
-| Speech-to-text | Deepgram |
-| Primary LLM configuration | Gemini |
-| LLM fallback | Groq |
-| Text-to-speech | Rime |
-| Backend API/token service | FastAPI |
-| Task management | REVIA TaskManager |
-| Task correctness | Fence tokens + stale-result validation |
+The repository contains a neutral delayed demonstration workload used to exercise task switching.
 
----
-
-# 7. Rime Configuration
-
-Rime is the **primary spoken-output provider** for REVIA.
-
-The exact Rime configuration used by the implementation is:
-
-| Parameter | Value |
-|---|---|
-| Model | `coda` |
-| Speaker | `lyra` |
-| Language | `eng` |
-| Endpoint | `wss://users-ws.rime.ai/ws3` |
-| Audio format | `pcm` |
-| Sample rate | `16000 Hz` |
-| Transport | WebSocket |
-| Playback path | Rime → LiveKit AgentSession → Browser |
-
-Rime is used for substantive spoken responses.
-
-REVIA does not use browser Web Speech API or another client-side TTS system as a competing spoken-output path.
-
-The Rime API key is server-side only.
-
----
-
-# 8. Conversation and Task State
-
-REVIA preserves valid conversation context within the active session.
-
-An interruption does not erase previously valid conversation state merely because the latest task was replaced.
-
-Instead:
+It is intentionally **not** presented as a production database, analytics service, or product data source.
 
 ```text
-Valid previous context
-        +
-New authoritative request
-        ↓
-Current response
+Task A
+  ↓
+TOOL_RUNNING
+  ↓
+USER CHANGES REQUEST
+  ↓
+Task A → OBSOLETE
+  ↓
+Task B → ACTIVE
+  ↓
+Task A finishes late
+  ↓
+Fence validation
+  ↓
+Task A → STALE / REJECTED
+  ↓
+Task A result is not spoken
+  ↓
+Task B remains authoritative
+  ↓
+Rime speaks Task B
 ```
 
-An obsolete task cannot commit its result as the current conversation state.
+This is the key correctness demonstration for the project.
 
-This allows interactions such as:
+---
+
+# ◈ Conversation Continuity
+
+Task authority and conversation context are separate concepts.
+
+When an active task is replaced:
+
+```text
+Task A becomes obsolete
+```
+
+does **not** mean:
+
+```text
+All previous conversation is deleted
+```
+
+Valid user turns are retained in session order, while only validated assistant responses are committed.
+
+Example:
 
 ```text
 User:
 "Tell me about Maharashtra."
 
 User:
-"Now make that only Pune."
+"Actually, only Pune."
 ```
 
-The second request is interpreted in the context of the first while becoming the authoritative current task.
+The second request can use the established session context while becoming the new authoritative task.
+
+An obsolete task cannot commit its assistant response.
 
 ---
 
-# 9. Interruption Handling
+# ◈ Rime Configuration
 
-When the user begins speaking while REVIA is speaking:
+REVIA uses **Rime** as its spoken-output provider.
 
-1. Rime playback is interrupted.
-2. The current task is invalidated/marked obsolete.
-3. The new utterance is accepted.
-4. A new task is created.
-5. The new task becomes authoritative.
-6. The new request is processed.
-7. Only the new valid response is sent to Rime.
+The current implementation is configured as:
 
-Conceptually:
+| Parameter | Configuration |
+|---|---|
+| Model | `coda` |
+| Speaker | `lyra` |
+| Language | `eng` |
+| Endpoint | `wss://users-ws.rime.ai/ws3` |
+| Transport | WebSocket |
+| Audio format | PCM |
+| Sample rate | 16 kHz |
+| Playback | LiveKit `AgentSession` |
+
+The relevant implementation is:
 
 ```text
-                    INTERRUPT
-                       │
-                       ▼
-              Stop current speech
-                       │
-                       ▼
-             Invalidate old task
-                       │
-                       ▼
-              Create new task
-                       │
-                       ▼
-              New task ACTIVE
-                       │
-                       ▼
-              Process new request
-                       │
-                       ▼
-                Rime speaks
+backend/rime/tts_rime.py
+backend/rime/events.py
 ```
+
+The Rime API key is server-side only.
+
+No browser Web Speech API is required as an alternative spoken-output path.
 
 ---
 
-# 10. Stale-Result Protection
+# ◈ Frontend
 
-The most important correctness property is that an asynchronous operation cannot regain authority after its task has been replaced.
+The frontend is a React + TypeScript Vite application built around a voice-first workspace.
 
-Example:
+It is not a generic analytics dashboard.
+
+## Main interface areas
+
+### Voice Core
+
+The central Three.js visualization communicates the current voice/task state.
+
+States include:
 
 ```text
-Task A → delayed operation starts
-
-User changes request
-
-Task A → OBSOLETE
-Task B → ACTIVE
-
-Task A → operation finishes
-
-                ↓
-         fence validation
-                ↓
-          Task A is stale
-                ↓
-             REJECT
+IDLE
+LISTENING
+THINKING
+WORKING
+SPEAKING
+INTERRUPTED
+TASK_REPLACED
+STALE_REJECTED
 ```
 
-The result is therefore prevented from:
+The visual system is state-driven rather than simply decorative.
 
-- updating authoritative state;
-- replacing the current response;
-- being spoken as current information.
+### Live Conversation
 
-This protection is independent of whether the underlying operation supports physical cancellation.
-
----
-
-# 11. Backend Components
-
-The repository is organized into the following major areas:
+Displays the current conversation between:
 
 ```text
-backend/
-├── evaluation/
-├── orchestration/
-├── rime/
-├── state/
-├── tools/
-└── voice_io/
+USER
+REVIA
 ```
 
-Important runtime responsibilities include:
+### Current Request / Authority
 
-### `backend/voice_io/`
+Shows which request currently has authority without requiring the user to inspect raw task IDs or fence tokens.
 
-LiveKit voice-agent runtime, microphone/session handling, and Deepgram integration.
+### Request Lineage
 
-### `backend/rime/`
+Provides a visual history of task transitions:
 
-Rime TTS integration and speech lifecycle handling.
+```text
+Previous Request
+      ↓
+REPLACED / OBSOLETE
+      ↓
+Current Request
+      ↓
+ACTIVE
+```
 
-### `backend/state/`
+When observable backend events indicate stale rejection, the interface can show:
 
-Task lifecycle, active-task authority, interruption invalidation, and fencing.
+```text
+IGNORED ✓
+```
 
-### `backend/orchestration/`
+### Rime Status
 
-LLM orchestration, response generation, tool coordination, and validation.
+The workspace exposes the active voice provider and configured identity at the product level:
 
-### `backend/tools/`
+```text
+RIME
+Coda · Lyra
+```
 
-Deterministic tools and the delayed demonstration workload used for task-switching tests.
+### Voice Identity Controls
 
-### `backend/evaluation/`
+The current frontend also includes controls and UI infrastructure for voice identity/presentation.
 
-Evaluation, stress testing, metrics, and evidence support.
+These controls are kept separate from the core task-authority mechanism.
 
----
+### Transcript Export
 
-# 12. Frontend
-
-The frontend is a React + TypeScript Vite application.
-
-The interface is designed as a voice-first workspace rather than a conventional analytics dashboard.
-
-It provides user-facing views for:
-
-- microphone interaction;
-- listening/speaking/working states;
-- realtime conversation;
-- current request;
-- request lineage;
-- reliability/task state;
-- Rime status;
-- connection state;
-- error states.
-
-The frontend is a **viewer of backend authority**.
-
-It does not independently decide whether a task is current, obsolete, or valid.
+The frontend contains a PDF transcript/dossier export utility for the conversation workspace.
 
 ---
 
-# 13. LiveKit Session and Token Flow
+# ◈ Frontend / Backend Responsibility Boundary
 
-The browser does not receive provider API secrets.
+## Frontend owns
 
-The intended authorization flow is:
+- visual UI;
+- browser microphone interaction;
+- LiveKit browser connection;
+- connection/reconnection UX;
+- transcript presentation;
+- voice-state animation;
+- current activity display;
+- request lineage visualization;
+- user-facing error states;
+- responsive behavior;
+- transcript/dossier presentation and export.
+
+## Backend owns
+
+- LiveKit agent runtime;
+- Deepgram STT;
+- conversation context;
+- TaskManager;
+- task lifecycle;
+- task IDs;
+- fence tokens;
+- interruption correctness;
+- asynchronous tool execution;
+- stale-result rejection;
+- LLM orchestration;
+- response validation;
+- controlled spoken-text delivery;
+- Rime TTS;
+- server-side credentials;
+- backend evaluation and instrumentation.
+
+### Critical rule
+
+> **The frontend displays backend authority; the frontend does not become the authority.**
+
+---
+
+# ◈ Token and Security Architecture
+
+The browser must never receive provider secrets.
+
+The session authorization path is:
 
 ```text
 Browser
    │
-   │ GET /token?room=revia-room&identity=<user>
+   │ GET /token?room=<room>&identity=<user>
    ▼
-FastAPI token server
+FastAPI Token Server
    │
-   │ signs short-lived JWT
+   │ LIVEKIT_API_KEY
+   │ LIVEKIT_API_SECRET
+   ▼
+Short-lived LiveKit JWT
+   │
    ▼
 Browser
    │
-   │ LiveKit JWT
    ▼
-LiveKit room
+LiveKit Room
 ```
 
-The token server uses:
+The token server is implemented in:
 
 ```text
-LIVEKIT_API_KEY
-LIVEKIT_API_SECRET
+token_server.py
 ```
 
-server-side.
-
-Only the public token-server URL is exposed to the browser.
-
-The following must never be exposed through Vite/client-side configuration:
+## Secrets that must remain server-side
 
 ```text
 LIVEKIT_API_SECRET
 RIME_API_KEY
 DEEPGRAM_API_KEY
 GROQ_API_KEY
-other provider secrets
+GEMINI_API_KEY
+any other provider secret
+```
+
+Never place these in:
+
+```text
+frontend/.env
+VITE_* variables
+JavaScript bundles
+README files
+screenshots
+demo recordings
+```
+
+Only public/non-secret frontend configuration belongs in Vite environment variables.
+
+---
+
+# ◈ Technology Stack
+
+| Layer | Technology |
+|---|---|
+| Frontend | React + TypeScript |
+| Build tool | Vite |
+| Browser realtime client | `livekit-client` |
+| Realtime transport | LiveKit |
+| Voice agent runtime | LiveKit Agents |
+| STT | Deepgram |
+| Primary/fallback LLM orchestration | Configured Gemini / Groq providers |
+| TTS | Rime |
+| Backend API | FastAPI |
+| ASGI server | Uvicorn |
+| Async runtime | Python `asyncio` |
+| Task correctness | TaskManager + fencing |
+| 3D visualization | Three.js / WebGL |
+| Styling | Vanilla CSS / design-token system |
+| Export | PDF transcript/dossier utility |
+
+---
+
+# ◈ Repository Structure
+
+```text
+dataforge-new2/
+│
+├── backend/
+│   ├── evaluation/
+│   │   └── test_voice_identity.py
+│   │
+│   ├── orchestration/
+│   │   ├── agent_brain.py
+│   │   ├── tool_contract.py
+│   │   └── stub_tool_client.py
+│   │
+│   ├── rime/
+│   │   ├── events.py
+│   │   └── tts_rime.py
+│   │
+│   ├── state/
+│   │   ├── task_manager.py
+│   │   └── fencing.py
+│   │
+│   ├── tools/
+│   │   └── delayed demonstration/tool infrastructure
+│   │
+│   └── voice_io/
+│       ├── agent.py
+│       ├── rime_voice_client.py
+│       └── stt_deepgram.py
+│
+├── frontend/
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── VoiceCore/
+│   │   │   ├── LandingPage.tsx
+│   │   │   ├── VoiceWorkspace.tsx
+│   │   │   ├── DossierHeader.tsx
+│   │   │   ├── RequestAuthority.tsx
+│   │   │   ├── RequestLineage.tsx
+│   │   │   ├── AmbientWaveform.tsx
+│   │   │   ├── MicInstrument.tsx
+│   │   │   └── VoiceIdentityControls.tsx
+│   │   │
+│   │   ├── hooks/
+│   │   ├── state/
+│   │   │   ├── livekitSession.ts
+│   │   │   ├── workspaceState.tsx
+│   │   │   └── workspaceTypes.ts
+│   │   │
+│   │   ├── utils/
+│   │   │   ├── exportTranscriptPdf.ts
+│   │   │   └── theme.ts
+│   │   │
+│   │   ├── App.tsx
+│   │   ├── main.tsx
+│   │   └── styles.css
+│   │
+│   ├── index.html
+│   ├── package.json
+│   ├── package-lock.json
+│   └── vite.config.ts
+│
+├── token_server.py
+├── quick_integration_check.py
+├── run_real_scenario.py
+├── requirements.txt
+│
+├── CONTRACTS.md
+├── FLOW_README.md
+├── MASTER_README.md
+├── PROGRESS.md
+├── RIME_EVIDENCE.md
+└── .env.example
 ```
 
 ---
 
-# 14. Environment Configuration
+# ◈ Prerequisites
 
-Create a local `.env` using `.env.example` as the template.
+Install:
 
-Secrets belong only in the local/server environment.
+- Python 3.10+
+- Node.js 18+
+- npm
+- a LiveKit project
+- Deepgram credentials
+- Rime credentials
+- configured LLM provider credentials
 
-Do not commit:
+For realtime browser use, the application also requires:
 
-```text
-.env
-.env.local
-API keys
-API secrets
-access tokens
+- browser microphone permission;
+- network access to LiveKit;
+- a running REVIA agent;
+- a running token server.
+
+---
+
+# ◈ Environment Configuration
+
+Create a local `.env` from `.env.example`.
+
+A representative configuration is:
+
+```env
+# LiveKit
+LIVEKIT_URL=wss://your-project.livekit.cloud
+LIVEKIT_API_KEY=your_livekit_api_key
+LIVEKIT_API_SECRET=your_livekit_api_secret
+
+# Speech
+DEEPGRAM_API_KEY=your_deepgram_api_key
+RIME_API_KEY=your_rime_api_key
+
+# LLM
+GEMINI_API_KEY=your_gemini_api_key
+GROQ_API_KEY=your_groq_api_key
+
+# Provider selection
+LLM_PROVIDER=gemini
+LLM_FALLBACK_PROVIDER=groq
 ```
 
-The repository should contain placeholder configuration only.
+Do not commit the actual `.env`.
 
-For the frontend, only non-secret configuration should use Vite environment variables.
+For the browser, only non-secret variables should be exposed, for example:
 
-Example:
-
-```text
-VITE_TOKEN_SERVER_URL=<public token server URL>
+```env
+VITE_TOKEN_SERVER_URL=http://localhost:7880
 VITE_LIVEKIT_ROOM=revia-room
 ```
 
 ---
 
-# 15. Local Setup
+# ◈ Quick Start
 
-## Clone the repository
+REVIA locally consists of three main processes:
 
-```bash
-git clone https://github.com/vedantk-086/revia.git
-cd revia
+```text
+1. Token Server
+2. REVIA LiveKit Agent
+3. React Frontend
 ```
 
-## Backend dependencies
-
-Create/activate a Python environment and install:
+## 1. Clone
 
 ```bash
+git clone <repository-url>
+cd dataforge-new2
+```
+
+## 2. Backend environment
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Create `.env` from `.env.example` and populate the required server-side credentials.
+Create `.env` from `.env.example` and configure the required credentials.
 
----
-
-# 16. Run the Token Server
+## 3. Start token server
 
 From the repository root:
 
@@ -579,23 +827,29 @@ From the repository root:
 uvicorn token_server:app --port 7880 --reload
 ```
 
-Health check:
+Check health:
 
 ```bash
 curl http://localhost:7880/health
 ```
 
-The token endpoint follows the form:
+Token endpoint:
 
 ```text
-GET /token?room=<room>&identity=<identity>
+GET /token?room=revia-room&identity=<identity>
 ```
 
-The token response contains the LiveKit session information required by the browser without exposing the LiveKit API secret.
+## 4. Start REVIA agent
 
----
+The LiveKit agent entrypoint is:
 
-# 17. Run the Frontend
+```text
+backend/voice_io/agent.py
+```
+
+Use the repository's configured LiveKit/Python agent startup command for this entrypoint.
+
+## 5. Start frontend
 
 ```bash
 cd frontend
@@ -603,254 +857,299 @@ npm install
 npm run dev
 ```
 
-For a production build:
+Open the Vite URL shown by the terminal, normally:
+
+```text
+http://localhost:5173
+```
+
+The browser obtains a short-lived LiveKit token from the token server and then joins the configured room.
+
+---
+
+# ◈ Production Deployment Architecture
+
+A typical public deployment separates the browser application, token service, and realtime agent:
+
+```text
+                     INTERNET
+                        │
+                        ▼
+              ┌─────────────────┐
+              │  Vercel / CDN   │
+              │ React Frontend  │
+              └────────┬────────┘
+                       │ HTTPS
+                       ▼
+              ┌─────────────────┐
+              │ Token Server    │
+              │ FastAPI         │
+              └────────┬────────┘
+                       │
+                       │ JWT
+                       ▼
+              ┌─────────────────┐
+              │  LiveKit Cloud  │
+              │ Realtime Room   │
+              └────────┬────────┘
+                       │
+                       ▼
+              ┌─────────────────┐
+              │ REVIA Agent     │
+              │ LiveKit Worker  │
+              └──────┬───┬──────┘
+                     │   │
+             ┌───────┘   └────────┐
+             ▼                    ▼
+        Deepgram                 Rime
+             │                    │
+             └────────┬───────────┘
+                      ▼
+                LLM Providers
+```
+
+The token server and agent must have access to their required secrets. The frontend does not.
+
+---
+
+# ◈ Testing and Verification
+
+## Integration check
 
 ```bash
+python3 quick_integration_check.py
+```
+
+## Real scenario runner
+
+```bash
+python3 run_real_scenario.py
+```
+
+## Evaluation tests
+
+```bash
+pytest
+```
+
+## Frontend build
+
+```bash
+cd frontend
+npm install
 npm run build
 ```
 
-The frontend then connects to the configured token server and joins the LiveKit room.
+A successful frontend build should complete without TypeScript/Vite build errors.
 
 ---
 
-# 18. Run the REVIA Agent
-
-The LiveKit agent entrypoint is located at:
-
-```text
-backend/voice_io/agent.py
-```
-
-The exact production/startup command should follow the LiveKit agent configuration used for the deployed worker.
-
-For direct local execution, use the repository's configured Python entrypoint for the agent.
-
-Do not expose provider credentials when starting the agent.
-
----
-
-# 19. Testing the Core Behavior
+# ◈ What Should Be Verified
 
 ## Normal voice flow
 
-Verify:
-
 ```text
 Browser connected
-      ↓
-Microphone active
-      ↓
+    ↓
+Microphone enabled
+    ↓
 User speaks
-      ↓
+    ↓
 Deepgram transcript
-      ↓
+    ↓
 REVIA processes request
-      ↓
+    ↓
 Response generated
-      ↓
-Rime speaks
-      ↓
-Audio heard in browser
+    ↓
+Rime synthesizes speech
+    ↓
+LiveKit delivers audio
+    ↓
+Browser plays response
 ```
 
-## Scenario A
-
-While REVIA is speaking, interrupt with a new request.
+## Multi-turn continuity
 
 Verify:
 
-- old speech stops;
-- old task becomes obsolete/replaced;
+```text
+"Tell me about Maharashtra."
+        ↓
+"Actually, only Pune."
+```
+
+Expected:
+
+- context is preserved;
+- the second request is understood relative to the first;
+- the second task becomes authoritative;
+- the current answer is the one delivered through Rime.
+
+## Speaking interruption
+
+Verify:
+
+- user can speak while REVIA is speaking;
+- previous speech stops;
+- previous task loses authority;
 - new task becomes active;
-- new response is generated;
-- Rime speaks the new response.
+- new response is the one spoken.
 
-## Scenario B
-
-Start the delayed demonstration workload.
-
-While it is running, change the request.
+## Delayed-work interruption
 
 Verify:
 
-- Task A becomes obsolete/replaced;
+- Task A enters asynchronous work;
+- user changes the request;
+- Task A becomes obsolete;
 - Task B becomes active;
 - Task A may finish later;
-- Task A's late result fails fence validation;
-- Task A's stale result is not spoken;
-- Task B remains authoritative and is spoken.
+- Task A fails task/fence validation;
+- Task A is not spoken as the current response;
+- Task B remains authoritative.
 
 ---
 
-# 20. Evidence and Reproducibility
+# ◈ Evidence Discipline
 
-The repository contains:
+REVIA distinguishes between:
+
+### Deterministically testable behavior
+
+Examples:
+
+- task lifecycle transitions;
+- task/fence validation;
+- stale-result rejection;
+- conversation context behavior;
+- Rime integration logic;
+- speech lifecycle handling;
+- session teardown handling.
+
+### Live integration behavior
+
+Examples:
+
+- actual browser microphone flow;
+- LiveKit room connection;
+- real Deepgram transcription;
+- real Rime audio playback;
+- end-to-end interruption timing;
+- live delayed-tool interruption sequence.
+
+A behavior should only be described as **live verified** when it has actually been observed in the corresponding integration/evidence run.
+
+Do not infer live behavior merely from the existence of code or unit tests.
+
+---
+
+# ◈ Known Limitations
+
+1. **The delayed workload is demonstration infrastructure.** It is intentionally generic and exists to exercise interruption/fencing behavior rather than represent a production data service.
+
+2. **Physical cancellation is not assumed.** A background operation may finish after its task becomes obsolete. Correctness is maintained by rejecting the stale result.
+
+3. **Provider/network availability can affect realtime behavior.** LiveKit, Deepgram, LLM providers, Rime, browser permissions, and network conditions are external dependencies.
+
+4. **Session-scoped context.** REVIA maintains conversational continuity within the active session; this is not presented as permanent cross-session memory.
+
+5. **No unsupported latency claim.** Specific interruption or end-to-end latency figures should only be reported when measured in an evidence run.
+
+6. **Frontend state is observational.** The frontend should not be treated as the source of truth for task authority.
+
+7. **Live integration status must be evaluated separately from deterministic tests.** The repository documents the intended and implemented architecture, but the final evidence should report exactly what was observed.
+
+---
+
+# ◈ Security Checklist
+
+Before committing or submitting:
 
 ```text
+[ ] .env is ignored
+[ ] .env.local is ignored
+[ ] frontend/dist is ignored
+[ ] node_modules is ignored
+[ ] __pycache__ is ignored
+[ ] no API secret is in frontend code
+[ ] no API secret is in Vite variables
+[ ] no LiveKit API secret is exposed to the browser
+[ ] no Rime API key is exposed to the browser
+[ ] no Deepgram API key is exposed to the browser
+[ ] no LLM provider secret is exposed to the browser
+```
+
+The repository's `.gitignore` should remain responsible for preventing local credentials and generated frontend artifacts from entering version control.
+
+---
+
+# ◈ Submission Checklist
+
+The challenge submission requires the working repository plus documentation/evidence.
+
+Ensure the repository contains:
+
+```text
+README.md
 RIME_EVIDENCE.md
+CONTRACTS.md
+FLOW_README.md
+PROGRESS.md
+.env.example
+backend/
+frontend/
+token_server.py
+requirements.txt
 ```
 
-This document records:
+The recorded demo should demonstrate:
 
-- the hard voice claim;
-- acceptance criteria;
-- test procedure;
-- observed results;
-- Rime configuration;
-- repeatability information;
-- limitations.
+1. the target user/problem;
+2. the normal end-to-end voice flow;
+3. the selected hard voice problem;
+4. a deliberate stress/failure case;
+5. the observed result/measurement;
+6. which speech provider is active.
 
-The evidence file should contain only behavior that has actually been run and observed.
+The evidence document should contain:
 
-The implementation itself is not treated as proof of a live integration.
-
----
-
-# 21. Known Limitations
-
-1. The delayed workload is controlled demonstration/test infrastructure rather than a production external database or analytics service.
-2. Physical cancellation of arbitrary external work is not assumed. REVIA relies on task/fence validation to prevent stale results from becoming authoritative.
-3. Network conditions, browser microphone permissions, LiveKit connectivity, and third-party provider availability can affect realtime behavior.
-4. Conversation continuity is maintained within the active session; this is not a permanent cross-session memory system.
-5. Full-duplex correctness is an application-level property involving realtime transport, interruption handling, task authority, orchestration, and speech delivery. It is not claimed as a property of Rime alone.
-6. Specific latency or end-to-end performance numbers should only be reported when measured in the corresponding evidence run.
-7. Frontend reliability indicators reflect backend events that are actually observable; the UI must not fabricate task state.
+- hard voice claim;
+- acceptance test;
+- procedure;
+- observed result;
+- limitations;
+- repeatable command/script/fixture where practical.
 
 ---
 
-# 22. Security
+# ◈ Final Product Statement
 
-REVIA keeps provider secrets on the server.
+REVIA is not primarily a chatbot, analytics dashboard, or TTS wrapper.
 
-Never commit or expose:
+Its core problem is:
+
+> **Reliable Full-Duplex Task Switching.**
+
+The system is designed so that:
 
 ```text
-LIVEKIT_API_SECRET
-RIME_API_KEY
-DEEPGRAM_API_KEY
-GROQ_API_KEY
-other provider credentials
+User can interrupt
+        ↓
+Current task loses authority
+        ↓
+New task becomes authoritative
+        ↓
+Old asynchronous work may finish
+        ↓
+Old result is fenced
+        ↓
+Old result cannot become current speech
+        ↓
+New response is delivered
 ```
 
-Never place these values in:
+That is the core of REVIA:
 
-```text
-frontend/.env
-VITE_* variables
-JavaScript bundles
-screenshots
-demo recordings
-README files
-```
+> **Talk while REVIA talks. Redirect while REVIA works.**
 
-Use `.env.example` for placeholders only.
-
----
-
-# 23. Repository Structure
-
-```text
-revia/
-│
-├── backend/
-│   ├── evaluation/
-│   ├── orchestration/
-│   ├── rime/
-│   ├── state/
-│   ├── tools/
-│   └── voice_io/
-│
-├── frontend/
-│   ├── src/
-│   ├── index.html
-│   ├── package.json
-│   ├── package-lock.json
-│   └── vite.config.ts
-│
-├── token_server.py
-├── requirements.txt
-├── .env.example
-├── CONTRACTS.md
-├── FLOW_README.md
-├── PROGRESS.md
-├── RIME_EVIDENCE.md
-└── README.md
-```
-
----
-
-# 24. Project Differentiator
-
-Most voice assistants can produce a response.
-
-REVIA focuses on what happens when the user **does not wait for that response to finish**.
-
-The system therefore treats:
-
-```text
-interrupt
-change request
-cancel
-refine
-new request
-```
-
-as first-class realtime events.
-
-The resulting design is:
-
-```text
-Voice
-  +
-Realtime transport
-  +
-Task authority
-  +
-Fencing
-  +
-Stale-result rejection
-  +
-Controlled speech delivery
-```
-
-The objective is not simply to make a voice assistant that talks.
-
-It is to make one that remains **correct while the conversation is changing**.
-
----
-
-# 25. Submission Checklist
-
-Before submission, verify:
-
-- [ ] Working source repository is accessible to judges.
-- [ ] `README.md` is present.
-- [ ] `RIME_EVIDENCE.md` is present.
-- [ ] `.env.example` contains placeholders only.
-- [ ] No `.env` or provider secrets are committed.
-- [ ] Exact Rime model is documented.
-- [ ] Exact Rime speaker is documented.
-- [ ] Exact Rime language is documented.
-- [ ] Exact Rime endpoint is documented.
-- [ ] Exact Rime audio format is documented.
-- [ ] Exact Rime transport is documented.
-- [ ] Setup instructions are reproducible.
-- [ ] Architecture is documented.
-- [ ] Third-party services are documented.
-- [ ] Known limitations are documented.
-- [ ] The recorded demo demonstrates the hard voice problem.
-- [ ] Evidence contains actual observed results rather than unverified claims.
-
----
-
-# 26. One-Line Summary
-
-> **REVIA is a realtime voice agent that lets users interrupt, refine, and change their minds without allowing stale work or outdated responses to take over the conversation.**
-
----
-
-## Built for the DataForge Rime Challenge
-
-REVIA uses Rime as its primary spoken-output provider and LiveKit as the realtime transport layer.
-
-**Interruptible by design. Correct by construction.**
+> **Interruptible by Design. Correct by Construction.**
